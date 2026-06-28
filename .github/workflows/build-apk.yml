@@ -82,8 +82,16 @@ jobs:
 
       - name: Clean and build (force)
         run: |
-          ./gradlew clean :app:assembleDebug --no-daemon --stacktrace --info | tee gradle-build.log
+          ./gradlew clean :app:assembleDebug --no-daemon --stacktrace --info --console=plain | tee gradle-build.log
         continue-on-error: true
+
+      - name: Extract compiler errors
+        run: |
+          # extract Kotlin compiler errors and common exception messages
+          grep -nE "^\s*e: |^\s*error:|Caused by:|Exception in thread|kapt|ksp" gradle-build.log > error-summary.txt || true
+          echo "---- error-summary start ----"
+          cat error-summary.txt || true
+          echo "---- error-summary end ----"
 
       - name: List app build outputs
         run: |
@@ -99,5 +107,6 @@ jobs:
           path: |
             gradle-build.log
             sdk-list.txt
+            error-summary.txt
             app/build/outputs/**/*.apk
             app/build
