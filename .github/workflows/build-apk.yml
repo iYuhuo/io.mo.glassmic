@@ -11,6 +11,7 @@ jobs:
     env:
       ANDROID_HOME: /usr/local/lib/android/sdk
       ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      PATH: /usr/local/lib/android/sdk/cmdline-tools/latest/bin:/usr/local/lib/android/sdk/platform-tools:${{ env.PATH }}
 
     steps:
       - name: Checkout
@@ -22,13 +23,25 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Setup Android SDK / NDK
-        uses: google-github-actions/setup-android@v2
-        with:
-          api-level: 35                      # platform api level required by project (compileSdk = 35)
-          build-tools: '35.0.0'              # adjust if your project uses other build-tools
-          ndk: '30.0.14904198'               # 安装项目需要的 NDK 版本
-          cache: true
+      - name: Install packages (unzip, wget)
+        run: sudo apt-get update && sudo apt-get install -y unzip wget
+
+      - name: Download Android command-line tools
+        run: |
+          mkdir -p $ANDROID_SDK_ROOT
+          cd $ANDROID_SDK_ROOT
+          # download commandlinetools (versioned URL may be updated over time)
+          wget -qO cmdline-tools.zip https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
+          unzip -q cmdline-tools.zip -d cmdline-tools
+          rm cmdline-tools.zip
+          # move/rename to "latest" so sdkmanager path is stable
+          mkdir -p cmdline-tools/latest
+          mv cmdline-tools/cmdline-tools/* cmdline-tools/latest/ || true
+
+      - name: Install Android SDK components (platform-tools, platforms, build-tools, NDK)
+        run: |
+          yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --sdk_root=${ANDROID_SDK_ROOT} "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;30.0.14904198"
+          yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --licenses --sdk_root=${ANDROID_SDK_ROOT}
 
       - name: Grant execute permission for gradlew
         run: chmod +x ./gradlew
