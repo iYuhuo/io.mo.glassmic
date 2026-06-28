@@ -5,11 +5,13 @@ import io.mo.glassmic.audio.SharedPcmPublisher
 import io.mo.glassmic.audio.SilenceSource
 import io.mo.glassmic.core.model.SourceType
 import io.mo.glassmic.data.config.ConfigStore
+import io.mo.glassmic.data.db.AudioClipEntity
 import io.mo.glassmic.data.db.AudioDao
 import io.mo.glassmic.data.runtime.RuntimeStateHolder
 import io.mo.glassmic.log.GlassLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.first
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -67,6 +69,17 @@ class PlaybackController @Inject constructor(
     suspend fun restorePersistedClip(): Boolean {
         val clipId = configStore.current().currentAudioId.takeIf { it.isNotBlank() } ?: return false
         return setCurrentClip(clipId, startPaused = true)
+    }
+
+    /**
+     * 返回当前数据库中可用的剪辑列表（用于 UI 展示，如悬浮窗的音源选择）。
+     */
+    suspend fun listClips(): List<AudioClipEntity> = withContext(Dispatchers.IO) {
+        dao.observeAllClips().first()
+    }
+
+    suspend fun getClipDisplayName(clipId: String): String? = withContext(Dispatchers.IO) {
+        dao.findClip(clipId)?.displayName
     }
 
     val isPaused: Boolean get() = publisher.isPaused
