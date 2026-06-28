@@ -82,31 +82,32 @@ jobs:
 
       - name: Clean and build (force)
         run: |
-          ./gradlew clean :app:assembleDebug --no-daemon --stacktrace --info --console=plain | tee gradle-build.log
-        continue-on-error: true
+          ./gradlew clean :app:assembleDebug --no-daemon --stacktrace --info --console=plain 2>&1 | tee gradle-build.log
+
+      - name: Check if APK was generated
+        run: |
+          echo "Looking for APK files..."
+          find app/build -type f -name "*.apk" -print || echo "❌ No APK found!"
+          ls -la app/build/outputs/apk/debug/ 2>/dev/null || echo "❌ apk/debug directory does not exist"
 
       - name: Extract compiler errors
+        if: always()
         run: |
           # extract Kotlin compiler errors and common exception messages
-          grep -nE "^\s*e: |^\s*error:|Caused by:|Exception in thread|kapt|ksp" gradle-build.log > error-summary.txt || true
+          grep -nE "^\s*e: |^\s*error:|Caused by:|Exception in thread|kapt|ksp" gradle-build.log > error-summary.txt || echo "No errors found"
           echo "---- error-summary start ----"
-          cat error-summary.txt || true
+          cat error-summary.txt || echo "No errors"
           echo "---- error-summary end ----"
 
-      - name: List app build outputs
-        run: |
-          echo "---- list app/build/outputs ----"
-          ls -la app/build/outputs || true
-          echo "---- find apk files ----"
-          find app/build/outputs -type f -name "*.apk" -print || true
-
-      - name: Upload build logs and any apks
+      - name: Upload build logs and APK artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-diagnostics
+          name: build-output-${{ github.run_number }}
           path: |
             gradle-build.log
-            sdk-list.txt
             error-summary.txt
-            app/build/outputs/**/*.apk
-            app/build
+            sdk-list.txt
+            app/build/outputs/apk/debug/*.apk
+          retention-days: 7
+          if-no-files-found: warn
