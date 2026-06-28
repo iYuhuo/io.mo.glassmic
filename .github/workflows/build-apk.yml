@@ -56,6 +56,17 @@ jobs:
           cat sdk-list.txt || true
         continue-on-error: true
 
+      - name: Write local.properties for SDK/NDK
+        run: |
+          cat > local.properties <<EOF
+          sdk.dir=/usr/local/lib/android/sdk
+          ndk.dir=/usr/local/lib/android/sdk/ndk/30.0.14904198
+          EOF
+
+      - name: Export NDK env
+        run: |
+          echo "ANDROID_NDK_HOME=/usr/local/lib/android/sdk/ndk/30.0.14904198" >> $GITHUB_ENV
+
       - name: Grant execute permission for gradlew
         run: chmod +x ./gradlew
 
@@ -69,21 +80,24 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gradle-
 
-      - name: Build with debug logs
+      - name: Clean and build (force)
         run: |
-          ./gradlew :app:assembleDebug --no-daemon --stacktrace --info | tee gradle-build.log
+          ./gradlew clean :app:assembleDebug --no-daemon --stacktrace --info | tee gradle-build.log
         continue-on-error: true
 
-      - name: Upload build logs
+      - name: List app build outputs
+        run: |
+          echo "---- list app/build/outputs ----"
+          ls -la app/build/outputs || true
+          echo "---- find apk files ----"
+          find app/build/outputs -type f -name "*.apk" -print || true
+
+      - name: Upload build logs and any apks
         uses: actions/upload-artifact@v4
         with:
-          name: build-logs
+          name: build-diagnostics
           path: |
             gradle-build.log
             sdk-list.txt
-
-      - name: Upload APK artifact (if produced)
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+            app/build/outputs/**/*.apk
+            app/build
