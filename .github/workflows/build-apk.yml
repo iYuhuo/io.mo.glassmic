@@ -6,12 +6,11 @@ on:
 
 jobs:
   build:
-    name: Build debug APK
+    name: Build debug APK (with diagnostics)
     runs-on: ubuntu-latest
     env:
       ANDROID_HOME: /usr/local/lib/android/sdk
       ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
-      PATH: /usr/local/lib/android/sdk/cmdline-tools/latest/bin:/usr/local/lib/android/sdk/platform-tools:${{ env.PATH }}
 
     steps:
       - name: Checkout
@@ -43,6 +42,20 @@ jobs:
           yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --sdk_root=${ANDROID_SDK_ROOT} "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;30.0.14904198"
           yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --licenses --sdk_root=${ANDROID_SDK_ROOT}
 
+      - name: Print environment
+        run: |
+          java -version || true
+          javac -version || true
+          ./gradlew -v || true
+          df -h || true
+          ls -la $ANDROID_SDK_ROOT || true
+
+      - name: sdkmanager list
+        run: |
+          $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --list --sdk_root=${ANDROID_SDK_ROOT} > sdk-list.txt || true
+          cat sdk-list.txt || true
+        continue-on-error: true
+
       - name: Grant execute permission for gradlew
         run: chmod +x ./gradlew
 
@@ -56,10 +69,20 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gradle-
 
-      - name: Build Debug APK
-        run: ./gradlew :app:assembleDebug --no-daemon
+      - name: Build with debug logs
+        run: |
+          ./gradlew :app:assembleDebug --no-daemon --stacktrace --info | tee gradle-build.log
+        continue-on-error: true
 
-      - name: Upload APK artifact
+      - name: Upload build logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            gradle-build.log
+            sdk-list.txt
+
+      - name: Upload APK artifact (if produced)
         uses: actions/upload-artifact@v4
         with:
           name: app-debug-apk
