@@ -40,9 +40,8 @@ android {
         }
     }
 
-    // 当前装的是 NDK 30.0.14904198 rc1
-    // 注：rc 版本可能有未发现的 toolchain bug；遇到诡异编译错误时建议补装一个 r26/r27 稳定版替换此行
-    ndkVersion = "30.0.14904198"
+    // 已更新为稳定版 NDK 27.1.12297006（之前使用的 30.0.14904198 rc 版本存在已知 toolchain bugs）
+    ndkVersion = "27.1.12297006"
 
     buildFeatures {
         prefab = true
