@@ -14,8 +14,11 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.widget.LinearLayout
+import android.widget.PopupMenu
 import android.widget.SeekBar
 import android.widget.TextView
+import android.widget.Toast
+import androidx.appcompat.widget.SwitchCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import dagger.hilt.android.AndroidEntryPoint
@@ -47,6 +50,11 @@ class FloatingWindowService : LifecycleService() {
     private var expanded = false
     private var floatingOpacity = 0.85f
 
+    // New controls
+    private var sourceButton: TextView? = null
+    private var restoreSwitch: SwitchCompat? = null
+    private var controlRow: LinearLayout? = null
+
     override fun onCreate() {
         super.onCreate()
         if (!Settings.canDrawOverlays(this)) {
@@ -61,7 +69,7 @@ class FloatingWindowService : LifecycleService() {
         lifecycleScope.launch {
             runtime.flow.collect { rt ->
                 val activeFile = rt.currentSourceType == SourceType.FILE && rt.enabled && !rt.safeMode
-                updateVisuals(activeFile, rt.paused, rt.positionMs, rt.durationMs)
+                updateVisuals(activeFile, rt.paused, rt.positionMs, rt.durationMs, rt)
             }
         }
         lifecycleScope.launch {
@@ -93,6 +101,9 @@ class FloatingWindowService : LifecycleService() {
         progressBar = null
         timeView = null
         statusDot = null
+        sourceButton = null
+        restoreSwitch = null
+        controlRow = null
         runtime.setFloatingVisible(false)
         super.onDestroy()
     }
@@ -159,6 +170,42 @@ class FloatingWindowService : LifecycleService() {
             setOnTouchListener { _, _ -> false }
         }
 
+        // Audio source selection button (shows PopupMenu)
+        val srcBtn = TextView(this).apply {
+            text = "音源"
+            setTextColor(Color.WHITE)
+            textSize = 12f
+            includeFontPadding = false
+            background = buttonBackground(enabled = true)
+            val w = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(30f).toInt())
+            w.leftMargin = dp(8f).toInt()
+            layoutParams = w
+            setPadding(dp(8f).toInt(), 0, dp(8f).toInt(), 0)
+            setOnClickListener {
+                // build and show popup
+                lifecycleScope.launch {
+                    val clips = playback.listClips()
+                    if (clips.isEmpty()) {
+                        Toast.makeText(this@FloatingWindowService, "无可用音源", Toast.LENGTH_SHORT).show()
+                        return@launch
+                    }
+                    val popup = PopupMenu(this@FloatingWindowService, this@apply)
+                    clips.forEachIndexed { idx, clip ->
+                        popup.menu.add(0, idx, idx, clip.displayName)
+                    }
+                    popup.setOnMenuItemClickListener { item ->
+                        val clip = clips[item.itemId]
+                        lifecycleScope.launch {
+                            val ok = playback.setCurrentClip(clip.id, startPaused = false)
+                            if (!ok) Toast.makeText(this@FloatingWindowService, "切换失败", Toast.LENGTH_SHORT).show()
+                        }
+                        true
+                    }
+                    popup.show()
+                }
+            }
+        }
+
         val topRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -168,6 +215,7 @@ class FloatingWindowService : LifecycleService() {
             )
             addView(dot)
             addView(title)
+            addView(srcBtn)
             addView(button)
         }
 
@@ -211,6 +259,46 @@ class FloatingWindowService : LifecycleService() {
             )
         }
 
+        // Control row for expanded view: source label + restore switch
+        val ctrlRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(8f).toInt() }
+            visibility = View.GONE
+        }
+
+        val restoreLabel = TextView(this).apply {
+            text = "恢复真实麦克风"
+            setTextColor(Color.WHITE)
+            textSize = 12f
+            includeFontPadding = false
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                weight = 1f
+                gravity = Gravity.CENTER_VERTICAL
+            }
+        }
+
+        val restoreSw = SwitchCompat(this).apply {
+            isChecked = false
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            setOnCheckedChangeListener { _, checked ->
+                if (checked) {
+                    lifecycleScope.launch {
+                        playback.setRealMic()
+                        Toast.makeText(this@FloatingWindowService, "已恢复真实麦克风", Toast.LENGTH_SHORT).show()
+                    }
+                } else {
+                    // 不执行自动还原行为
+                }
+            }
+        }
+
+        ctrlRow.addView(restoreLabel)
+        ctrlRow.addView(restoreSw)
+
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = idleBackground()
@@ -219,6 +307,7 @@ class FloatingWindowService : LifecycleService() {
             addView(topRow)
             addView(seek)
             addView(time)
+            addView(ctrlRow)
         }
 
         attachInteractions(container, params)
@@ -230,6 +319,9 @@ class FloatingWindowService : LifecycleService() {
         progressBar = seek
         timeView = time
         statusDot = dot
+        sourceButton = srcBtn
+        restoreSwitch = restoreSw
+        controlRow = ctrlRow
         setExpanded(false, updateWindow = false)
         wm.addView(container, params)
     }
@@ -293,7 +385,7 @@ class FloatingWindowService : LifecycleService() {
         runCatching { windowManager?.updateViewLayout(view, params) }
     }
 
-    private fun updateVisuals(activeFile: Boolean, paused: Boolean, positionMs: Long, durationMs: Long) {
+    private fun updateVisuals(activeFile: Boolean, paused: Boolean, positionMs: Long, durationMs: Long, rt: io.mo.glassmic.core.model.RuntimeState) {
         val root = rootView ?: return
         val title = textView ?: return
         val dot = statusDot ?: return
@@ -334,6 +426,24 @@ class FloatingWindowService : LifecycleService() {
             activeFile -> capsuleBackground(paused)
             else -> idleBackground()
         }
+
+        // Update additional controls: source display and restore switch
+        sourceButton?.let { btn ->
+            // fetch current clip display name asynchronously
+            lifecycleScope.launch {
+                val name = if (rt.currentAudioId.isNullOrBlank()) null else playback.getClipDisplayName(rt.currentAudioId ?: "")
+                btn.text = name ?: "音源"
+            }
+            btn.isEnabled = true
+            btn.alpha = if (activeFile || true) 1f else 0.45f
+        }
+
+        restoreSwitch?.let { sw ->
+            val isReal = rt.currentSourceType == SourceType.REAL_MIC
+            sw.isChecked = isReal
+            sw.isEnabled = true
+            sw.alpha = if (sw.isEnabled) 1f else 0.45f
+        }
     }
 
     private fun setExpanded(value: Boolean, updateWindow: Boolean = true) {
@@ -356,6 +466,7 @@ class FloatingWindowService : LifecycleService() {
         button.visibility = if (expanded) View.VISIBLE else View.GONE
         seek.visibility = if (expanded) View.VISIBLE else View.GONE
         time.visibility = if (expanded) View.VISIBLE else View.GONE
+        controlRow?.visibility = if (expanded) View.VISIBLE else View.GONE
         root.minimumWidth = if (expanded) dp(240f).toInt() else 0
         root.setPadding(
             dp(14f).toInt(),
@@ -366,7 +477,7 @@ class FloatingWindowService : LifecycleService() {
 
         val rt = runtime.value
         val activeFile = rt.currentSourceType == SourceType.FILE && rt.enabled && !rt.safeMode
-        updateVisuals(activeFile, rt.paused, rt.positionMs, rt.durationMs)
+        updateVisuals(activeFile, rt.paused, rt.positionMs, rt.durationMs, rt)
 
         if (updateWindow) {
             layoutParams?.let { params ->
