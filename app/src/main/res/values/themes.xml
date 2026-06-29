@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Yuhuo" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+    </style>
+
+    <!-- 悬浮窗内 AppCompat 控件（SwitchCompat 等）需要 AppCompat 主题 -->
+    <style name="Theme.Yuhuo.Overlay" parent="Theme.AppCompat.Light.NoActionBar">
+        <item name="colorPrimary">#1C1C20</item>
+        <item name="colorAccent">#34C759</item>
+    </style>
+</resources>

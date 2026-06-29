@@ -1,0 +1,40 @@
+# Gradle
+.gradle/
+build/
+**/build/
+local.properties
+
+# IDE
+.idea/
+*.iml
+.kotlin/
+.cxx/
+captures/
+app/debug/
+diag-*/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Output
+*.apk
+*.aab
+*.aar
+*.dex
+*.exe
+release/
+
+# Signing
+keystore.properties
+*.jks
+*.keystore
+
+# Logs / crash dumps (JVM / native)
+*.log
+hs_err_*
+replay_*
+*.mdmp
+
+# Local upstream diff snapshots (not part of source tree)
+_upstream_*
