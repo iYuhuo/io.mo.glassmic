@@ -9,6 +9,7 @@ import io.mo.glassmic.data.db.AudioClipEntity
 import io.mo.glassmic.data.db.AudioDao
 import io.mo.glassmic.data.runtime.RuntimeStateHolder
 import io.mo.glassmic.log.GlassLog
+import io.mo.glassmic.service.FloatingWindowConstants
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.first
@@ -143,12 +144,36 @@ class PlaybackController @Inject constructor(
         return setCurrentClip(clipId, startPaused = true)
     }
 
-    /**
-     * 返回当前数据库中可用的剪辑列表（用于 UI 展示，如悬浮窗的音源选择）。
-     */
+    suspend fun listGroups() = withContext(Dispatchers.IO) {
+        dao.observeGroups().first()
+    }
+
     suspend fun listClips(): List<AudioClipEntity> = withContext(Dispatchers.IO) {
         dao.observeAllClips().first()
     }
+
+    suspend fun setOutputVolume(volume: Float) = withContext(Dispatchers.IO) {
+        val clamped = volume.coerceIn(
+            FloatingWindowConstants.OUTPUT_VOLUME_MIN,
+            FloatingWindowConstants.OUTPUT_VOLUME_MAX
+        )
+        publisher.setOutputVolumeRuntime(clamped)
+        configStore.update {
+            it.setFloatingWindow(it.floatingWindow.toBuilder().setOutputVolume(clamped))
+        }
+    }
+
+    /** 拖动音量条时立即生效（不写盘）。 */
+    fun setOutputVolumeRuntime(volume: Float) {
+        publisher.setOutputVolumeRuntime(
+            volume.coerceIn(
+                FloatingWindowConstants.OUTPUT_VOLUME_MIN,
+                FloatingWindowConstants.OUTPUT_VOLUME_MAX
+            )
+        )
+    }
+
+    fun outputVolumeBlocking(): Float = publisher.outputVolumeBlocking()
 
     suspend fun getClipDisplayName(clipId: String): String? = withContext(Dispatchers.IO) {
         dao.findClip(clipId)?.displayName

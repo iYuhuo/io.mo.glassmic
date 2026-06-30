@@ -84,6 +84,7 @@ class SharedPcmPublisher @Inject constructor(
     @Volatile private var writerStarted = false
     @Volatile private var paused: Boolean = false
     @Volatile private var monitorEnabled = false
+    @Volatile private var outputVolumeRuntime = Float.NaN
     @Volatile private var effects = AudioEffects()
     private val monitorLock = Any()
     private var monitorTrack: AudioTrack? = null
@@ -306,7 +307,7 @@ class SharedPcmPublisher @Inject constructor(
         val data = ByteArray(buf.remaining())
         buf.get(data)
         val sourceData = if (!paused && currentSource.type == SourceType.FILE) {
-            applyEffects(data)
+            processOutput(data)
         } else {
             data
         }
@@ -434,6 +435,50 @@ class SharedPcmPublisher @Inject constructor(
                     }
                 }
             }
+        }
+    }
+
+    /** 悬浮窗拖动音量条时立即生效，避免等 DataStore 写入。 */
+    fun setOutputVolumeRuntime(volume: Float) {
+        outputVolumeRuntime = volume.coerceIn(0f, 2f)
+    }
+
+    fun outputVolumeBlocking(): Float = outputVolume()
+
+    private fun outputVolume(): Float {
+        if (!outputVolumeRuntime.isNaN()) {
+            return outputVolumeRuntime.coerceIn(0f, 2f)
+        }
+        val v = configStore.currentBlocking().floatingWindow.outputVolume
+        return if (v <= 0f) 1f else v.coerceIn(0f, 2f)
+    }
+
+    private fun processOutput(data: ByteArray): ByteArray {
+        val vol = outputVolume()
+        val fx = effects
+        val needVolume = vol < 0.999f || vol > 1.001f
+        val needFx = fx.noiseSim || fx.highGain
+        if (!needVolume && !needFx) return data
+        val buf = data.copyOf()
+        if (needVolume) applyVolumeInPlace(buf, vol)
+        if (needFx) applyEffects(buf)
+        return buf
+    }
+
+    private fun applyVolumeInPlace(data: ByteArray, volume: Float) {
+        if (volume <= 0f) {
+            data.fill(0)
+            return
+        }
+        if (volume >= 0.999f && volume <= 1.001f) return
+        var i = 0
+        while (i + 1 < data.size) {
+            val sample = ((data[i + 1].toInt() shl 8) or (data[i].toInt() and 0xFF)).toShort().toInt()
+            val scaled = (sample * volume).toInt()
+                .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+            data[i] = (scaled and 0xFF).toByte()
+            data[i + 1] = ((scaled ushr 8) and 0xFF).toByte()
+            i += 2
         }
     }
 

@@ -26,7 +26,14 @@ object FloatingWindowConstants {
     const val PADDING_STANDARD_DP = 14f
     const val PADDING_LARGE_DP = 16f
 
-    const val SOURCE_PICKER_WIDTH_DP = 260f
+    const val SOURCE_PICKER_WIDTH_DP = 300f
+    const val SOURCE_PICKER_MAX_HEIGHT_RATIO = 0.55f
+    const val GROUP_CHIP_HEIGHT_DP = 36f
+
+    const val OUTPUT_VOLUME_MIN = 0f
+    const val OUTPUT_VOLUME_MAX = 2f
+    const val OUTPUT_VOLUME_DEFAULT = 1f
+    const val OUTPUT_VOLUME_SEEK_MAX = 200
 
     // UI元素尺寸 (dp)
     const val STATUS_DOT_SIZE_DP = 8f

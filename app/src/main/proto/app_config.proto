@@ -54,6 +54,8 @@ message FloatingWindow {
   int32 position_y = 6;
   bool local_monitor = 7;
   bool real_mic_mix = 8;
+  // 虚拟音源注入音量倍率，1.0 = 100%，范围建议 0.0~2.0
+  float output_volume = 9;
 }
 
 enum FloatingMode {

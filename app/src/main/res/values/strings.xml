@@ -50,6 +50,10 @@
     <string name="float_progress_paused_hint">已暂停 · 真实麦</string>
     <string name="float_mix_active">麦声闪避</string>
     <string name="float_mix_paused">麦声闪避（暂停中未生效）</string>
+    <string name="float_output_volume">输出音量</string>
+    <string name="float_source_picker_title">选择音源</string>
+    <string name="float_source_group_empty">该分组暂无音源</string>
+    <string name="float_volume_percent">%d%%</string>
 
     <!-- 主页 -->
     <string name="home_pick_audio">选择音频</string>

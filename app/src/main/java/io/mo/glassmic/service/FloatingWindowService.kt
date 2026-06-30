@@ -11,6 +11,7 @@ import android.os.IBinder
 import android.provider.Settings
 import android.view.ContextThemeWrapper
 import android.view.Gravity
+import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
@@ -18,6 +19,7 @@ import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.ArrayAdapter
 import android.widget.LinearLayout
+import android.widget.HorizontalScrollView
 import android.widget.ListView
 import android.widget.PopupWindow
 import android.widget.SeekBar
@@ -31,6 +33,7 @@ import io.mo.glassmic.core.model.SourceType
 import io.mo.glassmic.data.audio.PlaybackController
 import io.mo.glassmic.data.config.ConfigStore
 import io.mo.glassmic.data.db.AudioClipEntity
+import io.mo.glassmic.data.db.AudioGroupEntity
 import io.mo.glassmic.data.runtime.RuntimeStateHolder
 import io.mo.glassmic.log.GlassLog
 import kotlinx.coroutines.Job
@@ -59,6 +62,7 @@ class FloatingWindowService : LifecycleService() {
     private var statusDot: View? = null
     private var layoutParams: WindowManager.LayoutParams? = null
     private var userSeeking = false
+    private var userVolumeSeeking = false
     private var expanded = false
     private var floatingOpacity = 0.85f
     private var currentSize = FloatingSize.STANDARD
@@ -71,6 +75,9 @@ class FloatingWindowService : LifecycleService() {
     private var mixLabelView: TextView? = null
     private var monitorRow: LinearLayout? = null
     private var mixRow: LinearLayout? = null
+    private var volumeRow: LinearLayout? = null
+    private var volumeBar: SeekBar? = null
+    private var volumeValueText: TextView? = null
     private var dragHandle: LinearLayout? = null
     private var panelContext: Context? = null
     private var currentClipNameJob: Job? = null
@@ -115,7 +122,13 @@ class FloatingWindowService : LifecycleService() {
             ?.coerceIn(FloatingWindowConstants.MIN_OPACITY, FloatingWindowConstants.MAX_OPACITY)
             ?: FloatingWindowConstants.DEFAULT_OPACITY
 
+        val initialVolume = cfg.floatingWindow.outputVolume
+            .takeIf { it > 0f }
+            ?: FloatingWindowConstants.OUTPUT_VOLUME_DEFAULT
+        playback.setOutputVolumeRuntime(initialVolume)
+
         showPanel()
+        updateVolumeBarProgress(initialVolume)
 
         layoutParams?.x = cfg.floatingWindow.positionX
             .takeIf { it >= 0 }
@@ -153,6 +166,13 @@ class FloatingWindowService : LifecycleService() {
                 rootView?.alpha = floatingOpacity
                 localMonitorPreferred = updated.floatingWindow.localMonitor
                 realMicMixPreferred = updated.floatingWindow.realMicMix
+                if (!userVolumeSeeking) {
+                    val vol = updated.floatingWindow.outputVolume
+                        .takeIf { it > 0f }
+                        ?: FloatingWindowConstants.OUTPUT_VOLUME_DEFAULT
+                    playback.setOutputVolumeRuntime(vol)
+                    updateVolumeBarProgress(vol)
+                }
                 playback.applyLocalMonitorPreference()
                 playback.applyRealMicMixPreference()
                 val size = updated.floatingWindow.size.takeUnless { it == FloatingSize.UNRECOGNIZED }
@@ -191,6 +211,9 @@ class FloatingWindowService : LifecycleService() {
         mixLabelView = null
         monitorRow = null
         mixRow = null
+        volumeRow = null
+        volumeBar = null
+        volumeValueText = null
         dragHandle = null
         panelContext = null
         currentClipNameJob?.cancel()
@@ -295,12 +318,20 @@ class FloatingWindowService : LifecycleService() {
                         Toast.makeText(this@FloatingWindowService, "请先在主界面启用虚拟麦克风", Toast.LENGTH_SHORT).show()
                         return@launch
                     }
+                    val groups = playback.listGroups()
                     val clips = playback.listClips()
-                    if (clips.isEmpty()) {
+                    if (groups.isEmpty() || clips.isEmpty()) {
                         Toast.makeText(this@FloatingWindowService, "无可用音源", Toast.LENGTH_SHORT).show()
                         return@launch
                     }
-                    showSourcePicker(this@apply, clips)
+                    val clipsByGroup = clips.groupBy { it.groupId }
+                    showGroupedSourcePicker(
+                        anchor = this@apply,
+                        groups = groups,
+                        clipsByGroup = clipsByGroup,
+                        initialGroupId = rt.currentGroupId,
+                        currentClipId = rt.currentAudioId
+                    )
                 }
             }
         }
@@ -356,6 +387,69 @@ class FloatingWindowService : LifecycleService() {
                 LinearLayout.LayoutParams.WRAP_CONTENT
             )
         }
+
+        val volumeRowLayout = LinearLayout(uiContext).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(8f).toInt() }
+            visibility = View.GONE
+        }
+
+        val volumeLabel = TextView(uiContext).apply {
+            text = getString(R.string.float_output_volume)
+            setTextColor(Color.WHITE)
+            textSize = 12f
+            includeFontPadding = false
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+
+        val volumeSeek = SeekBar(uiContext).apply {
+            max = FloatingWindowConstants.OUTPUT_VOLUME_SEEK_MAX
+            progress = volumeSeekProgress(playback.outputVolumeBlocking())
+            splitTrack = false
+            layoutParams = LinearLayout.LayoutParams(0, dp(FloatingWindowConstants.SEEK_BAR_HEIGHT_DP).toInt()).apply {
+                weight = 1f
+                leftMargin = dp(6f).toInt()
+                rightMargin = dp(4f).toInt()
+            }
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(bar: SeekBar, progress: Int, fromUser: Boolean) {
+                    if (!fromUser) return
+                    volumeValueText?.text = getString(R.string.float_volume_percent, progress)
+                    playback.setOutputVolumeRuntime(progress / 100f)
+                }
+
+                override fun onStartTrackingTouch(bar: SeekBar) {
+                    userVolumeSeeking = true
+                }
+
+                override fun onStopTrackingTouch(bar: SeekBar) {
+                    lifecycleScope.launch {
+                        playback.setOutputVolume(bar.progress / 100f)
+                        userVolumeSeeking = false
+                    }
+                }
+            })
+        }
+
+        val volumeText = TextView(uiContext).apply {
+            text = getString(R.string.float_volume_percent, volumeSeek.progress)
+            setTextColor(Color.argb(0xCC, 0xFF, 0xFF, 0xFF))
+            textSize = 11f
+            includeFontPadding = false
+            minWidth = dp(36f).toInt()
+            gravity = Gravity.END
+        }
+
+        volumeRowLayout.addView(volumeLabel)
+        volumeRowLayout.addView(volumeSeek)
+        volumeRowLayout.addView(volumeText)
 
         val monitorRowLayout = LinearLayout(uiContext).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -465,6 +559,7 @@ class FloatingWindowService : LifecycleService() {
             addView(topRow)
             addView(seek)
             addView(time)
+            addView(volumeRowLayout)
             addView(monitorRowLayout)
             addView(mixRowLayout)
         }
@@ -482,6 +577,9 @@ class FloatingWindowService : LifecycleService() {
         sourceButton = srcBtn
         monitorSwitch = monitorSw
         mixSwitch = mixSw
+        volumeRow = volumeRowLayout
+        volumeBar = volumeSeek
+        volumeValueText = volumeText
         monitorRow = monitorRowLayout
         mixRow = mixRowLayout
     }
@@ -493,17 +591,121 @@ class FloatingWindowService : LifecycleService() {
         setStroke(dp(1f).toInt(), Color.argb(0x44, 0xFF, 0xFF, 0xFF))
     }
 
-    private fun showSourcePicker(anchor: View, clips: List<AudioClipEntity>) {
+    private fun volumeSeekProgress(volume: Float): Int {
+        return (volume.coerceIn(
+            FloatingWindowConstants.OUTPUT_VOLUME_MIN,
+            FloatingWindowConstants.OUTPUT_VOLUME_MAX
+        ) * 100f).toInt().coerceIn(0, FloatingWindowConstants.OUTPUT_VOLUME_SEEK_MAX)
+    }
+
+    private fun updateVolumeBarProgress(volume: Float) {
+        val progress = volumeSeekProgress(volume)
+        volumeBar?.progress = progress
+        volumeValueText?.text = getString(R.string.float_volume_percent, progress)
+    }
+
+    private fun groupChipBackground(selected: Boolean): GradientDrawable = GradientDrawable().apply {
+        shape = GradientDrawable.RECTANGLE
+        cornerRadius = dp(16f)
+        setColor(if (selected) Color.argb(0xFF, 0x34, 0xC7, 0x59) else Color.argb(0x55, 0xFF, 0xFF, 0xFF))
+    }
+
+    private fun showGroupedSourcePicker(
+        anchor: View,
+        groups: List<AudioGroupEntity>,
+        clipsByGroup: Map<String, List<AudioClipEntity>>,
+        initialGroupId: String?,
+        currentClipId: String?
+    ) {
         sourcePickerPopup?.dismiss()
         val ctx = panelContext ?: return
 
-        val names = clips.map { it.displayName }
-        val listView = ListView(ctx).apply {
-            adapter = object : ArrayAdapter<String>(ctx, android.R.layout.simple_list_item_1, names) {
+        val popupWidth = dp(FloatingWindowConstants.SOURCE_PICKER_WIDTH_DP).toInt()
+        val popupHeight = (resources.displayMetrics.heightPixels *
+            FloatingWindowConstants.SOURCE_PICKER_MAX_HEIGHT_RATIO).toInt()
+
+        val header = TextView(ctx).apply {
+            text = getString(R.string.float_source_picker_title)
+            setTextColor(Color.WHITE)
+            textSize = 14f
+            setPadding(dp(12f).toInt(), dp(10f).toInt(), dp(12f).toInt(), dp(6f).toInt())
+        }
+
+        val chipContainer = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(8f).toInt(), 0, dp(8f).toInt(), dp(6f).toInt())
+        }
+
+        val chipScroll = HorizontalScrollView(ctx).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(chipContainer)
+        }
+
+        val clipList = ListView(ctx).apply {
+            divider = null
+            isVerticalScrollBarEnabled = true
+            isScrollbarFadingEnabled = false
+            overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1f
+            )
+        }
+
+        val emptyHint = TextView(ctx).apply {
+            text = getString(R.string.float_source_group_empty)
+            setTextColor(Color.argb(0x99, 0xFF, 0xFF, 0xFF))
+            textSize = 13f
+            gravity = Gravity.CENTER
+            visibility = View.GONE
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1f
+            )
+        }
+
+        val content = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(header)
+            addView(chipScroll)
+            addView(clipList)
+            addView(emptyHint)
+        }
+
+        var selectedGroupId = initialGroupId?.takeIf { id -> groups.any { it.id == id } }
+            ?: groups.first().id
+
+        fun bindClipList(groupId: String) {
+            val clips = clipsByGroup[groupId].orEmpty()
+            if (clips.isEmpty()) {
+                clipList.visibility = View.GONE
+                emptyHint.visibility = View.VISIBLE
+                clipList.adapter = null
+                return
+            }
+            clipList.visibility = View.VISIBLE
+            emptyHint.visibility = View.GONE
+            clipList.adapter = object : ArrayAdapter<AudioClipEntity>(
+                ctx,
+                android.R.layout.simple_list_item_1,
+                clips
+            ) {
                 override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
-                    return super.getView(position, convertView, parent).apply {
+                    val clip = getItem(position) ?: return View(ctx)
+                    val label = buildString {
+                        append(clip.displayName)
+                        if (clip.id == currentClipId) append("  ✓")
+                    }
+                    return (convertView ?: LayoutInflater.from(ctx)
+                        .inflate(android.R.layout.simple_list_item_1, parent, false)).apply {
                         findViewById<TextView>(android.R.id.text1)?.apply {
-                            setTextColor(Color.WHITE)
+                            text = label
+                            setTextColor(
+                                if (clip.id == currentClipId) Color.argb(0xFF, 0x34, 0xC7, 0x59)
+                                else Color.WHITE
+                            )
                             textSize = 14f
                         }
                         minimumHeight = dp(44f).toInt()
@@ -511,11 +713,7 @@ class FloatingWindowService : LifecycleService() {
                     }
                 }
             }
-            divider = null
-            isVerticalScrollBarEnabled = true
-            isScrollbarFadingEnabled = false
-            overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
-            setOnItemClickListener { _, _, position, _ ->
+            clipList.setOnItemClickListener { _, _, position, _ ->
                 val clip = clips[position]
                 lifecycleScope.launch {
                     val ok = playback.setCurrentClip(clip.id, startPaused = false)
@@ -527,12 +725,42 @@ class FloatingWindowService : LifecycleService() {
             }
         }
 
-        val itemHeight = dp(44f).toInt()
-        val maxHeight = (resources.displayMetrics.heightPixels * 0.45f).toInt()
-        val popupHeight = (clips.size * itemHeight).coerceIn(itemHeight, maxHeight)
-        val popupWidth = dp(FloatingWindowConstants.SOURCE_PICKER_WIDTH_DP).toInt()
+        fun selectGroup(groupId: String) {
+            selectedGroupId = groupId
+            for (i in 0 until chipContainer.childCount) {
+                val chip = chipContainer.getChildAt(i) as? TextView ?: continue
+                val selected = chip.tag == groupId
+                chip.background = groupChipBackground(selected)
+                chip.setTextColor(if (selected) Color.BLACK else Color.WHITE)
+            }
+            bindClipList(groupId)
+        }
 
-        val popup = PopupWindow(listView, popupWidth, popupHeight, true).apply {
+        chipContainer.removeAllViews()
+        groups.forEach { group ->
+            val chip = TextView(ctx).apply {
+                tag = group.id
+                text = "${group.emoji} ${group.name}"
+                setTextColor(Color.WHITE)
+                textSize = 12f
+                gravity = Gravity.CENTER
+                background = groupChipBackground(false)
+                setPadding(dp(12f).toInt(), dp(6f).toInt(), dp(12f).toInt(), dp(6f).toInt())
+                val lp = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+                lp.rightMargin = dp(6f).toInt()
+                layoutParams = lp
+                isClickable = true
+                setOnClickListener { selectGroup(group.id) }
+            }
+            chipContainer.addView(chip)
+        }
+
+        selectGroup(selectedGroupId)
+
+        val popup = PopupWindow(content, popupWidth, popupHeight, true).apply {
             isOutsideTouchable = true
             isFocusable = true
             isClippingEnabled = true
@@ -600,7 +828,7 @@ class FloatingWindowService : LifecycleService() {
                         setExpanded(!expanded)
                     } else if (dragging) {
                         resetDragVisuals()
-                        snapToEdge(rootView ?: v, params)
+                        clampToScreen(rootView ?: v, params)
                     }
                     dragging = false
                     true
@@ -636,29 +864,16 @@ class FloatingWindowService : LifecycleService() {
         rootView?.scaleY = 1f
     }
 
-    private fun snapToEdge(view: View, params: WindowManager.LayoutParams) {
+    /** 仅限制在屏幕内，不吸附左右边缘。 */
+    private fun clampToScreen(view: View, params: WindowManager.LayoutParams) {
         val screenWidth = resources.displayMetrics.widthPixels
         val screenHeight = resources.displayMetrics.heightPixels
         val viewWidth = view.width.takeIf { it > 0 } ?: dp(FloatingWindowConstants.WIDTH_STANDARD_DP).toInt()
         val viewHeight = view.height.takeIf { it > 0 } ?: dp(100f).toInt()
+        val margin = dp(FloatingWindowConstants.EDGE_MARGIN_DP).toInt()
 
-        val centerX = params.x + viewWidth / 2
-        val centerY = params.y + viewHeight / 2
-
-        val edgeMargin = dp(FloatingWindowConstants.EDGE_MARGIN_DP).toInt()
-
-        // 左右吸附
-        params.x = if (centerX < screenWidth / 2) {
-            edgeMargin
-        } else {
-            screenWidth - viewWidth - edgeMargin
-        }
-
-        // 上下边界检查
-        params.y = params.y.coerceIn(
-            edgeMargin,
-            screenHeight - viewHeight - edgeMargin
-        )
+        params.x = params.x.coerceIn(margin, (screenWidth - viewWidth - margin).coerceAtLeast(margin))
+        params.y = params.y.coerceIn(margin, (screenHeight - viewHeight - margin).coerceAtLeast(margin))
 
         runCatching { windowManager?.updateViewLayout(view, params) }
         savePosition()
@@ -805,6 +1020,13 @@ class FloatingWindowService : LifecycleService() {
             sw.isEnabled = canMonitor
             sw.alpha = if (canMonitor) 1f else 0.45f
         }
+
+        volumeBar?.let { bar ->
+            val canVolume = canSelectSource && rt.currentSourceType == SourceType.FILE
+            bar.isEnabled = canVolume
+            bar.alpha = if (canVolume) 1f else 0.45f
+        }
+        volumeValueText?.alpha = volumeBar?.alpha ?: 1f
     }
 
     private fun setExpanded(value: Boolean, updateWindow: Boolean = true) {
@@ -828,6 +1050,7 @@ class FloatingWindowService : LifecycleService() {
         button.visibility = if (expanded) View.VISIBLE else View.GONE
         seek.visibility = if (expanded) View.VISIBLE else View.GONE
         time.visibility = if (expanded) View.VISIBLE else View.GONE
+        volumeRow?.visibility = if (expanded) View.VISIBLE else View.GONE
         monitorRow?.visibility = if (expanded) View.VISIBLE else View.GONE
         mixRow?.visibility = if (expanded) View.VISIBLE else View.GONE
         srcBtn.visibility = if (expanded) View.VISIBLE else View.GONE

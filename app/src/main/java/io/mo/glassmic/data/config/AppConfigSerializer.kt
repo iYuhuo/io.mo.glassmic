@@ -37,6 +37,7 @@ object AppConfigSerializer : Serializer<AppConfig> {
                 .setPositionY(FloatingWindowConstants.POSITION_UNSET)
                 .setLocalMonitor(false)
                 .setRealMicMix(false)
+                .setOutputVolume(1f)
         )
         .setAppearance(
             Appearance.newBuilder()
