@@ -186,9 +186,12 @@ private fun StatusHeroCard(
             Spacer(modifier = Modifier.height(8.dp))
 
             Text(
-                text = if (state.running)
-                    stringResource(R.string.status_using_virtual)
-                else stringResource(R.string.status_using_real),
+                text = when {
+                    !state.running -> stringResource(R.string.status_using_real)
+                    state.paused && state.hasFileSource -> stringResource(R.string.status_paused_real_mic)
+                    state.hasFileSource -> stringResource(R.string.status_using_virtual)
+                    else -> stringResource(R.string.status_ready_to_play)
+                },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
             )
@@ -220,7 +223,7 @@ private fun StatusHeroCard(
                 )
                 Text(
                     "${formatMs(state.positionMs)} / ${formatMs(state.durationMs)}" +
-                        if (state.paused) "  ·  已暂停" else "",
+                        if (state.paused) "  ·  ${stringResource(R.string.float_progress_paused_hint)}" else "",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                 )

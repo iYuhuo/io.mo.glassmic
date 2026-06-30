@@ -200,7 +200,7 @@ static bool read_virtual_mono_s16(
 
 // =================== 真实麦混音闪避（与 RealMicMixer.kt 对齐） ===================
 
-static float g_duck_envelope = 0.85f;
+static float g_duck_envelope = 0.55f;
 
 static float rms_s16_samples(const int16_t* samples, int32_t count) {
     if (count <= 0) return 0.f;
@@ -223,12 +223,12 @@ static float rms_float_samples(const float* samples, int32_t count) {
 }
 
 static float update_duck_envelope(float rms) {
-    constexpr float kThreshold = 800.f;
-    constexpr float kFullScale = 12'000.f;
-    constexpr float kMinDuck = 0.12f;
-    constexpr float kMaxVirtual = 0.85f;
-    constexpr float kAttack = 0.35f;
-    constexpr float kRelease = 0.05f;
+    constexpr float kThreshold = 550.f;
+    constexpr float kFullScale = 10'000.f;
+    constexpr float kMinDuck = 0.03f;
+    constexpr float kMaxVirtual = 0.55f;
+    constexpr float kAttack = 0.55f;
+    constexpr float kRelease = 0.12f;
 
     float target = kMaxVirtual;
     if (rms >= kThreshold) {

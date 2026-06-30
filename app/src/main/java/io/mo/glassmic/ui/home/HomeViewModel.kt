@@ -18,6 +18,7 @@ import io.mo.glassmic.data.runtime.RuntimeStateHolder
 import io.mo.glassmic.data.runtime.SafeModeRepository
 import io.mo.glassmic.proto.PlaybackPolicy as ProtoPolicy
 import io.mo.glassmic.proto.ScopeMode as ProtoScope
+import io.mo.glassmic.R
 import io.mo.glassmic.service.FloatingWindowService
 import io.mo.glassmic.service.GlassForegroundService
 import kotlinx.coroutines.flow.SharingStarted
@@ -123,7 +124,14 @@ class HomeViewModel @Inject constructor(
     }.stateIn(viewModelScope, SharingStarted.Eagerly, HomeUiState())
 
     fun togglePause() {
+        val wasPaused = playback.isPaused
         playback.togglePause()
+        val msg = if (wasPaused) {
+            context.getString(R.string.toast_resumed_virtual)
+        } else {
+            context.getString(R.string.toast_paused_real_mic)
+        }
+        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
     }
 
     fun seekTo(positionMs: Long) {

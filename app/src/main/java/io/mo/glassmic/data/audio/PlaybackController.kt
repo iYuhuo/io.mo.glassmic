@@ -73,7 +73,7 @@ class PlaybackController @Inject constructor(
 
     /**
      * 暂停虚拟音频并透传真实麦克风，保留当前音源与播放进度。
-     * 用于悬浮窗「恢复真实麦克风」开关。
+     * 悬浮窗/主页的播放暂停按钮与此等效；保留供程序化调用。
      */
     fun enableRealMicPassThrough(): Boolean {
         val rt = runtime.value
@@ -126,7 +126,7 @@ class PlaybackController @Inject constructor(
 
     private fun applyRealMicMixRuntime(preferred: Boolean) {
         val rt = runtime.value
-        val activeFile = rt.enabled && !rt.safeMode && rt.currentSourceType == SourceType.FILE
+        val activeFile = rt.enabled && !rt.safeMode && rt.currentSourceType == SourceType.FILE && !rt.paused
         if (preferred && activeFile && !rt.realMicPassThrough) {
             runtime.setRealMicMixWithDucking(true)
         } else {

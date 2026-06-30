@@ -12,12 +12,12 @@ import kotlin.math.sqrt
  */
 object RealMicMixer {
 
-    private const val ATTACK = 0.35f
-    private const val RELEASE = 0.05f
-    private const val THRESHOLD = 800f
-    private const val FULL_SCALE = 12_000f
-    private const val MIN_DUCK = 0.12f
-    private const val MAX_VIRTUAL = 0.85f
+    private const val ATTACK = 0.55f
+    private const val RELEASE = 0.12f
+    private const val THRESHOLD = 550f
+    private const val FULL_SCALE = 10_000f
+    private const val MIN_DUCK = 0.03f
+    private const val MAX_VIRTUAL = 0.55f
 
     @Volatile
     private var envelope = MAX_VIRTUAL

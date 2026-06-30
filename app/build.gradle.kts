@@ -20,8 +20,8 @@ android {
         minSdk = 30
         targetSdk = 35
 
-        versionCode = 4
-        versionName = "1.1.0"
+        versionCode = 5
+        versionName = "1.2.0"
 
         resourceConfigurations += listOf(
             "zh-rCN",
@@ -36,6 +36,8 @@ android {
         }
 
         release {
+
+            signingConfig = signingConfigs.getByName("debug")
 
             isMinifyEnabled = true
             isShrinkResources = true

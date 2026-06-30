@@ -41,11 +41,20 @@
     <string name="status_off">yuhuo 已关闭</string>
     <string name="status_using_real">当前使用真实麦克风</string>
     <string name="status_using_virtual">虚拟麦克风使用中</string>
+    <string name="status_ready_to_play">已开启，请按播放开始注入虚拟音源</string>
+    <string name="status_paused_real_mic">已暂停，目标 App 听真实麦克风</string>
+    <string name="toast_paused_real_mic">已暂停，目标 App 听真实麦克风</string>
+    <string name="toast_resumed_virtual">已恢复虚拟音频播放</string>
+    <string name="float_status_playing">播放中</string>
+    <string name="float_status_paused_real_mic">已暂停 · 真实麦</string>
+    <string name="float_progress_paused_hint">已暂停 · 真实麦</string>
+    <string name="float_mix_active">麦声闪避</string>
+    <string name="float_mix_paused">麦声闪避（暂停中未生效）</string>
 
     <!-- 主页 -->
     <string name="home_pick_audio">选择音频</string>
     <string name="home_open_floating">打开悬浮窗</string>
-    <string name="home_restore_mic">恢复真实麦克风</string>
+    <string name="home_restore_mic">放弃虚拟音源</string>
     <string name="home_field_source">音源</string>
     <string name="home_field_group">片段组</string>
     <string name="home_field_policy">策略</string>

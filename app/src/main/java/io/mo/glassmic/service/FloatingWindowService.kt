@@ -63,21 +63,18 @@ class FloatingWindowService : LifecycleService() {
     private var floatingOpacity = 0.85f
     private var currentSize = FloatingSize.STANDARD
     private var lastDisplayedAudioId: String? = null
-    private var lastRestoreSwitchChecked: Boolean? = null
 
     // New controls
     private var sourceButton: TextView? = null
-    private var restoreSwitch: SwitchCompat? = null
     private var monitorSwitch: SwitchCompat? = null
     private var mixSwitch: SwitchCompat? = null
-    private var controlRow: LinearLayout? = null
+    private var mixLabelView: TextView? = null
     private var monitorRow: LinearLayout? = null
     private var mixRow: LinearLayout? = null
     private var dragHandle: LinearLayout? = null
     private var panelContext: Context? = null
     private var currentClipNameJob: Job? = null
     private var sourcePickerPopup: PopupWindow? = null
-    private var restoreSwitchUpdating = false  // 防止程序化设置isChecked时触发监听器
     private var monitorSwitchUpdating = false
     private var mixSwitchUpdating = false
     private var lastMonitorSwitchChecked: Boolean? = null
@@ -189,10 +186,9 @@ class FloatingWindowService : LifecycleService() {
         timeView = null
         statusDot = null
         sourceButton = null
-        restoreSwitch = null
         monitorSwitch = null
         mixSwitch = null
-        controlRow = null
+        mixLabelView = null
         monitorRow = null
         mixRow = null
         dragHandle = null
@@ -200,7 +196,6 @@ class FloatingWindowService : LifecycleService() {
         currentClipNameJob?.cancel()
         currentClipNameJob = null
         lastDisplayedAudioId = null
-        lastRestoreSwitchChecked = null
         lastMonitorSwitchChecked = null
         lastMixSwitchChecked = null
         runtime.setFloatingVisible(false)
@@ -269,7 +264,14 @@ class FloatingWindowService : LifecycleService() {
             isEnabled = false
             isClickable = true
             setOnClickListener {
+                val wasPaused = playback.isPaused
                 playback.togglePause()
+                val msg = if (wasPaused) {
+                    getString(R.string.toast_resumed_virtual)
+                } else {
+                    getString(R.string.toast_paused_real_mic)
+                }
+                Toast.makeText(this@FloatingWindowService, msg, Toast.LENGTH_SHORT).show()
                 it.parent?.requestDisallowInterceptTouchEvent(true)
             }
         }
@@ -355,67 +357,6 @@ class FloatingWindowService : LifecycleService() {
             )
         }
 
-        // Control row for expanded view: source label + restore switch
-        val ctrlRow = LinearLayout(uiContext).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = dp(8f).toInt() }
-            visibility = View.GONE
-        }
-
-        val restoreLabel = TextView(uiContext).apply {
-            text = "恢复真实麦克风"
-            setTextColor(Color.WHITE)
-            textSize = 12f
-            includeFontPadding = false
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                weight = 1f
-                gravity = Gravity.CENTER_VERTICAL
-            }
-        }
-
-        val restoreSw = SwitchCompat(uiContext).apply {
-            isChecked = false
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            isClickable = true
-            setOnCheckedChangeListener { _, checked ->
-                if (restoreSwitchUpdating) return@setOnCheckedChangeListener
-                if (checked) {
-                    if (!playback.enableRealMicPassThrough()) {
-                        restoreSwitchUpdating = true
-                        isChecked = false
-                        restoreSwitchUpdating = false
-                        Toast.makeText(
-                            this@FloatingWindowService,
-                            "请先选择虚拟音源",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    } else {
-                        Toast.makeText(
-                            this@FloatingWindowService,
-                            "已切换为真实麦克风，虚拟音频已暂停",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    }
-                } else {
-                    lifecycleScope.launch {
-                        playback.disableRealMicPassThrough()
-                        Toast.makeText(
-                            this@FloatingWindowService,
-                            "已恢复虚拟音频播放",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    }
-                }
-            }
-        }
-
-        ctrlRow.addView(restoreLabel)
-        ctrlRow.addView(restoreSw)
-
         val monitorRowLayout = LinearLayout(uiContext).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -469,7 +410,7 @@ class FloatingWindowService : LifecycleService() {
         }
 
         val mixLabel = TextView(uiContext).apply {
-            text = "麦声闪避"
+            text = getString(R.string.float_mix_active)
             setTextColor(Color.WHITE)
             textSize = 12f
             includeFontPadding = false
@@ -478,6 +419,7 @@ class FloatingWindowService : LifecycleService() {
                 gravity = Gravity.CENTER_VERTICAL
             }
         }
+        mixLabelView = mixLabel
 
         val mixSw = SwitchCompat(uiContext).apply {
             isChecked = false
@@ -523,7 +465,6 @@ class FloatingWindowService : LifecycleService() {
             addView(topRow)
             addView(seek)
             addView(time)
-            addView(ctrlRow)
             addView(monitorRowLayout)
             addView(mixRowLayout)
         }
@@ -539,10 +480,8 @@ class FloatingWindowService : LifecycleService() {
         timeView = time
         statusDot = dot
         sourceButton = srcBtn
-        restoreSwitch = restoreSw
         monitorSwitch = monitorSw
         mixSwitch = mixSw
-        controlRow = ctrlRow
         monitorRow = monitorRowLayout
         mixRow = mixRowLayout
     }
@@ -781,7 +720,8 @@ class FloatingWindowService : LifecycleService() {
 
         title.text = when {
             !activeFile -> getString(R.string.app_name)
-            expanded -> if (paused) "Paused" else "Playing"
+            paused -> getString(R.string.float_status_paused_real_mic)
+            expanded -> getString(R.string.float_status_playing)
             else -> "${formatMs(positionMs)} / ${formatMs(durationMs)}"
         }
 
@@ -813,7 +753,7 @@ class FloatingWindowService : LifecycleService() {
             else -> idleBackground()
         }
 
-        // Update additional controls: source display and restore switch
+        // Update additional controls
         val canSelectSource = rt.enabled && !rt.safeMode
         sourceButton?.let { btn ->
             val audioId = rt.currentAudioId
@@ -830,23 +770,15 @@ class FloatingWindowService : LifecycleService() {
             btn.background = buttonBackground(enabled = canSelectSource)
         }
 
-        restoreSwitch?.let { sw ->
-            // 主开关关闭、未注入虚拟音源、或真实麦透传开启时，视为真实麦克风
-            val isOnRealMic = !rt.enabled ||
-                rt.currentSourceType == SourceType.REAL_MIC ||
-                rt.realMicPassThrough
-            if (lastRestoreSwitchChecked != isOnRealMic) {
-                lastRestoreSwitchChecked = isOnRealMic
-                restoreSwitchUpdating = true
-                sw.isChecked = isOnRealMic
-                restoreSwitchUpdating = false
-            }
-            sw.isEnabled = canSelectSource && rt.currentSourceType == SourceType.FILE && !realMicMixPreferred
-            sw.alpha = if (sw.isEnabled) 1f else 0.45f
+        mixLabelView?.text = if (realMicMixPreferred && paused && canSelectSource) {
+            getString(R.string.float_mix_paused)
+        } else {
+            getString(R.string.float_mix_active)
         }
 
         mixSwitch?.let { sw ->
             val canMix = canSelectSource && rt.currentSourceType == SourceType.FILE
+            val mixActive = canMix && !paused && !rt.realMicPassThrough
             if (lastMixSwitchChecked != realMicMixPreferred) {
                 lastMixSwitchChecked = realMicMixPreferred
                 mixSwitchUpdating = true
@@ -854,7 +786,12 @@ class FloatingWindowService : LifecycleService() {
                 mixSwitchUpdating = false
             }
             sw.isEnabled = canMix
-            sw.alpha = if (canMix) 1f else 0.45f
+            sw.alpha = when {
+                !canMix -> 0.45f
+                mixActive -> 1f
+                realMicMixPreferred -> 0.65f
+                else -> 1f
+            }
         }
 
         monitorSwitch?.let { sw ->
@@ -891,7 +828,6 @@ class FloatingWindowService : LifecycleService() {
         button.visibility = if (expanded) View.VISIBLE else View.GONE
         seek.visibility = if (expanded) View.VISIBLE else View.GONE
         time.visibility = if (expanded) View.VISIBLE else View.GONE
-        controlRow?.visibility = if (expanded) View.VISIBLE else View.GONE
         monitorRow?.visibility = if (expanded) View.VISIBLE else View.GONE
         mixRow?.visibility = if (expanded) View.VISIBLE else View.GONE
         srcBtn.visibility = if (expanded) View.VISIBLE else View.GONE

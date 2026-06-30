@@ -19,7 +19,6 @@ import dagger.hilt.android.AndroidEntryPoint
 import io.mo.glassmic.MainActivity
 import io.mo.glassmic.R
 import io.mo.glassmic.core.Constants
-import io.mo.glassmic.core.model.SourceType
 import io.mo.glassmic.data.audio.PlaybackController
 import io.mo.glassmic.data.runtime.RuntimeStateHolder
 import io.mo.glassmic.log.GlassLog
@@ -55,11 +54,7 @@ class GlassForegroundService : LifecycleService() {
             }
             playback.applyLocalMonitorPreference()
             playback.applyRealMicMixPreference()
-            // 恢复上次音源时默认 paused，pipe 只会送静音；第三方 App 听起来像「没生效」
-            if (runtime.value.currentSourceType == SourceType.FILE && runtime.value.paused) {
-                playback.resume()
-                GlassLog.b("FgService") { "auto-resumed playback for hook injection" }
-            }
+            // 恢复音源后保持暂停，需用户手动点播放才开始注入（与 README 一致）
         }
         GlassLog.b("FgService") { "前台服务启动，常驻通知已显示" }
     }
