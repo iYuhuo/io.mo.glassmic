@@ -32,6 +32,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -88,7 +92,8 @@ fun HomeScreen(
                 state = state,
                 onToggle = vm::toggleMaster,
                 onTogglePause = vm::togglePause,
-                onSeek = vm::seekTo
+                onSeek = vm::seekTo,
+                onToggleFloating = vm::toggleFloating
             )
 
             Spacer(modifier = Modifier.height(16.dp))
@@ -103,15 +108,10 @@ fun HomeScreen(
                 clickable = true,
                 onClick = onOpenScope
             )
-            InfoRow(label = stringResource(R.string.home_field_floating), value = state.floatingLabel)
             HookStatusRow(
                 label = stringResource(R.string.home_field_hook),
                 activity = state.hookActivity,
                 lastPkg = state.hookLastPkg,
-                lastResolve = state.hookLastResolve,
-                lastResolveReason = state.hookLastResolveReason,
-                nativeOk = state.hookNativeOk,
-                audiorecordHooked = state.hookAudiorecordHooked,
                 lastPingMs = state.hookLastPingMs,
                 api = state.hookApi
             )
@@ -137,12 +137,6 @@ fun HomeScreen(
                 ) { Text(stringResource(R.string.home_pick_audio)) }
 
                 OutlinedButton(
-                    onClick = vm::toggleFloating,
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(16.dp)
-                ) { Text(stringResource(R.string.home_open_floating)) }
-
-                OutlinedButton(
                     onClick = vm::restoreRealMic,
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(16.dp)
@@ -157,7 +151,8 @@ private fun StatusHeroCard(
     state: HomeUiState,
     onToggle: (Boolean) -> Unit,
     onTogglePause: () -> Unit,
-    onSeek: (Long) -> Unit
+    onSeek: (Long) -> Unit,
+    onToggleFloating: () -> Unit
 ) {
     GlassSurface(
         modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
@@ -186,15 +181,29 @@ private fun StatusHeroCard(
             Spacer(modifier = Modifier.height(8.dp))
 
             Text(
-                text = when {
-                    !state.running -> stringResource(R.string.status_using_real)
-                    state.paused && state.hasFileSource -> stringResource(R.string.status_paused_real_mic)
-                    state.hasFileSource -> stringResource(R.string.status_using_virtual)
-                    else -> stringResource(R.string.status_ready_to_play)
-                },
+                text = if (state.running)
+                    stringResource(R.string.status_using_virtual)
+                else stringResource(R.string.status_using_real),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
             )
+
+            // 打开悬浮窗开关：仅在 GlassMic（功能总开关）开启时显示
+            if (state.running) {
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = stringResource(R.string.home_open_floating),
+                        style = MaterialTheme.typography.bodyLarge,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Switch(
+                        checked = state.floatingWindowVisible,
+                        onCheckedChange = { onToggleFloating() }
+                    )
+                }
+            }
 
             if (state.hasFileSource) {
                 Spacer(modifier = Modifier.height(12.dp))
@@ -212,18 +221,34 @@ private fun StatusHeroCard(
                     }
                 }
                 Spacer(modifier = Modifier.height(4.dp))
-                // 拖动进度——只有真在播 file 时才有意义
+                // 拖动只改本地分数，松手再 seek——避免每帧 MediaExtractor 跳转卡顿
+                var scrubbing by remember { mutableStateOf(false) }
+                var scrubFrac by remember { mutableFloatStateOf(0f) }
+                val progress = if (scrubbing) scrubFrac else state.progress.coerceIn(0f, 1f)
+                val displayMs = if (state.durationMs > 0) {
+                    (progress * state.durationMs).toLong()
+                } else {
+                    state.positionMs
+                }
                 Slider(
-                    value = state.progress.coerceIn(0f, 1f),
+                    value = progress,
                     onValueChange = { v ->
-                        if (state.durationMs > 0) onSeek((v * state.durationMs).toLong())
+                        scrubbing = true
+                        scrubFrac = v
+                    },
+                    onValueChangeFinished = {
+                        if (!scrubbing) return@Slider
+                        scrubbing = false
+                        if (state.durationMs > 0) {
+                            onSeek((scrubFrac * state.durationMs).toLong())
+                        }
                     },
                     valueRange = 0f..1f,
                     modifier = Modifier.fillMaxWidth()
                 )
                 Text(
-                    "${formatMs(state.positionMs)} / ${formatMs(state.durationMs)}" +
-                        if (state.paused) "  ·  ${stringResource(R.string.float_progress_paused_hint)}" else "",
+                    "${formatMs(displayMs)} / ${formatMs(state.durationMs)}" +
+                        if (state.paused) "  ·  已暂停" else "",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                 )
@@ -317,10 +342,6 @@ private fun HookStatusRow(
     label: String,
     activity: HookActivity,
     lastPkg: String?,
-    lastResolve: String?,
-    lastResolveReason: String?,
-    nativeOk: Boolean?,
-    audiorecordHooked: Boolean?,
     lastPingMs: Long,
     api: Int
 ) {
@@ -357,12 +378,6 @@ private fun HookStatusRow(
                 val detail = buildString {
                     append(time)
                     if (!lastPkg.isNullOrBlank()) append("  ·  $lastPkg")
-                    if (!lastResolve.isNullOrBlank()) append("  ·  $lastResolve")
-                    if (!lastResolveReason.isNullOrBlank() && lastResolve == "REAL_MIC") {
-                        append("($lastResolveReason)")
-                    }
-                    if (nativeOk == false) append("  ·  native待就绪")
-                    if (audiorecordHooked == false) append("  ·  微信hook待就绪")
                     if (api > 0) append("  ·  API $api")
                 }
                 Text(

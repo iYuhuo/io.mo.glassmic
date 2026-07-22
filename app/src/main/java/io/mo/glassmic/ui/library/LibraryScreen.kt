@@ -1,7 +1,6 @@
 package io.mo.glassmic.ui.library
 
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -85,8 +84,10 @@ fun LibraryScreen(
     var policyEditingGroup by remember { mutableStateOf<AudioGroupEntity?>(null) }
     var renamingClip by remember { mutableStateOf<AudioClipEntity?>(null) }
 
+    // 批量导入：优先调用系统自带〖文件〗(DocumentsUI)，支持多选
+    val importContract = remember { OpenMultipleAudioViaFiles() }
     val importLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenMultipleDocuments()
+        contract = importContract
     ) { uris ->
         if (uris.isNotEmpty()) vm.importUris(uris)
     }
@@ -148,7 +149,6 @@ fun LibraryScreen(
                     currentClipId = state.currentClipId,
                     previewClipId = state.previewClipId,
                     onPreview = vm::togglePreview,
-                    onSetCurrent = vm::setAsCurrent,
                     onMore = { editingClip = it }
                 )
             }
@@ -223,7 +223,6 @@ fun LibraryScreen(
             isPreviewing = state.previewClipId == clip.id,
             onDismiss = { editingClip = null },
             onPreview = { editingClip = null; vm.togglePreview(clip) },
-            onSetCurrent = { editingClip = null; vm.setAsCurrent(clip) },
             onRename = { editingClip = null; renamingClip = clip },
             onDelete = { editingClip = null; confirmDeleteClip = clip }
         )
@@ -306,7 +305,6 @@ private fun ClipList(
     currentClipId: String?,
     previewClipId: String?,
     onPreview: (AudioClipEntity) -> Unit,
-    onSetCurrent: (AudioClipEntity) -> Unit,
     onMore: (AudioClipEntity) -> Unit
 ) {
     LazyColumn(
@@ -320,7 +318,6 @@ private fun ClipList(
                 isCurrent = clip.id == currentClipId,
                 isPreviewing = clip.id == previewClipId,
                 onPreview = { onPreview(clip) },
-                onSetCurrent = { onSetCurrent(clip) },
                 onMore = { onMore(clip) }
             )
         }
@@ -333,7 +330,6 @@ private fun ClipRow(
     isCurrent: Boolean,
     isPreviewing: Boolean,
     onPreview: () -> Unit,
-    onSetCurrent: () -> Unit,
     onMore: () -> Unit
 ) {
     Row(
@@ -383,11 +379,6 @@ private fun ClipRow(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
             )
-        }
-        if (!isCurrent) {
-            TextButton(onClick = onSetCurrent) {
-                Text(stringResource(R.string.library_set_current))
-            }
         }
         IconButton(onClick = onMore) {
             Icon(Icons.Default.MoreVert, contentDescription = null)
@@ -572,7 +563,6 @@ private fun ClipActionsSheet(
     isPreviewing: Boolean,
     onDismiss: () -> Unit,
     onPreview: () -> Unit,
-    onSetCurrent: () -> Unit,
     onRename: () -> Unit,
     onDelete: () -> Unit
 ) {
@@ -585,7 +575,6 @@ private fun ClipActionsSheet(
                 stringResource(if (isPreviewing) R.string.library_preview_stop else R.string.library_preview),
                 onPreview
             )
-            SheetRow(Icons.Default.CheckCircle, stringResource(R.string.library_set_current), onSetCurrent)
             SheetRow(Icons.Default.Edit, stringResource(R.string.library_rename), onRename)
             SheetRow(Icons.Default.Delete, stringResource(R.string.library_delete), onDelete, danger = true)
         }

@@ -22,7 +22,6 @@ Thumbs.db
 *.aab
 *.aar
 *.dex
-*.exe
 release/
 
 # Signing
@@ -30,11 +29,6 @@ keystore.properties
 *.jks
 *.keystore
 
-# Logs / crash dumps (JVM / native)
+# Logs
 *.log
-hs_err_*
-replay_*
-*.mdmp
-
-# Local upstream diff snapshots (not part of source tree)
-_upstream_*
+IDEA.md

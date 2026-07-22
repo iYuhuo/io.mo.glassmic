@@ -1,4 +1,4 @@
-# yuhuo
+﻿# yuhuo
 
 [简体中文](https://github.com/lm060719/io.mo.glassmic/blob/main/README_zh.md)
 
@@ -13,18 +13,35 @@ yuhuo is an open-source virtual microphone and audio pipeline testing module for
 - Use playback policies: loop, silence after end, or return to the real microphone.
 - Restore the last selected audio source after the app process is killed.
 - Start restored audio in a paused state so playback is explicit.
-- Floating window with capsule mode, expanded playback controls, pause/resume, and seek bar.
-- Configurable floating window opacity.
+- Floating ball with customizable icon and size (small/standard/large).
+- Tap the ball to open a song menu and pick audio by group directly.
+- While playing, tap the ball for a mini control bar: pause/resume, seek, and switch source.
+- Configurable floating ball opacity.
 - Runtime routing through a foreground service and always-visible notification.
 - LSPosed integration with recommended scope limited to Android/system framework.
 - AudioRecord and AAudio input interception paths.
 - Per-consumer sample-rate/channel conversion for clients such as WeChat and system recorders.
 - Diagnostics, logs, hook status, and interception statistics.
 - Optional experimental audio effects such as high gain and stronger noise simulation.
+- Text-to-speech (TTS): type text and feed synthesized speech into the target app — handy for testing voice recognition / voice input without preparing audio files.
+- Two-step TTS flow: generate first, then play (replayable).
+- Offline system TTS out of the box, plus optional online AI TTS with OpenAI, Google Gemini, and Xiaomi MiMo protocols, custom endpoint URL and model, model listing, connection test, and audition.
+- MiMo preset voices, voice design (describe a voice in text), and voice cloning from a short reference audio sample (≤60 s / ≤5 MB).
+
+## Text-to-Speech (TTS)
+
+Open the floating window's menu and tap "🗣 Text-to-Speech". Type your text, tap **Generate** to synthesize, then tap **Play** to feed the audio into whatever app is recording. Play is repeatable, so you can re-feed the same clip without regenerating.
+
+- **System TTS** works fully offline with no configuration.
+- **AI TTS** (Settings → AI Provider (TTS)) enables online synthesis with a custom endpoint URL and model, and supports three protocols:
+  - **OpenAI** — `/audio/speech`
+  - **Google Gemini** — `generateContent` with the AUDIO modality
+  - **Xiaomi MiMo** — `chat/completions`, including preset voices, voice design (describe a voice in text), and voice cloning from a reference audio sample (≤60 s / ≤5 MB)
+- Fetch the available model list from the provider, run a connection test, and audition the result (generate, then play through the speaker) before feeding it to an app.
 
 ## Requirements
 
-- Android 15/16 target environment.
+- Android 10 (API 29) minimum; Android 15/16 recommended target environment.
 - Root access, for example Magisk or KernelSU.
 - LSPosed with libxposed API support.
 - Android notification, overlay, file access, and foreground service permissions.
@@ -34,7 +51,7 @@ yuhuo is an open-source virtual microphone and audio pipeline testing module for
 
 1. Install the APK.
 2. Enable the yuhuo module in LSPosed.
-3. Use the recommended LSPosed scope: `android` and `system`.
+3. It is recommended to use `android` and `system` for the scope, as well as the target application.
 4. Reboot the device so the module is loaded cleanly.
 5. Open yuhuo, complete onboarding, grant permissions, import an audio file, and select it as the current source.
 6. Start yuhuo from the main screen when you want the virtual microphone to be active.

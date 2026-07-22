@@ -1,4 +1,4 @@
-syntax = "proto3";
+﻿syntax = "proto3";
 
 package io.mo.glassmic.proto;
 
@@ -31,6 +31,54 @@ message AppConfig {
 
   // App 选择页是否显示系统应用
   bool show_system_apps = 15;
+
+  // 文字转语音（TTS → 虚拟麦克风）配置
+  TtsConfig tts = 16;
+}
+
+// TTS 配置：系统 TTS 参数 + 预留的 AI TTS 接口
+message TtsConfig {
+  // 系统 TTS 参数
+  float speech_rate = 1;   // 语速，0 视为 1.0
+  float pitch = 2;         // 音调，0 视为 1.0
+  string voice = 3;        // 系统语音 / locale（如 zh-CN），空则用引擎默认
+
+  // AI TTS（在线合成）——暂时隐藏，仅预留接口与配置
+  TtsAiConfig ai = 4;
+
+  // 悬浮窗 TTS 面板：生成后显示可拖动的播放进度条
+  bool progress_bar_enabled = 5;
+
+  // 延时播放：点「播放」后等待多少毫秒再真正出声，0 表示立即播放
+  int32 delay_ms = 6;
+
+  // TTS 播完策略（与全局 playback_policy 独立；默认 SILENCE=切回真麦，与 REAL_MIC 同行为）
+  PlaybackPolicy playback_policy = 7;
+}
+
+// AI TTS 接入配置。兼容 OpenAI / Gemini 接口协议，支持自定义 url 与模型。
+message TtsAiConfig {
+  bool enabled = 1;        // true=在线 AI；false=系统 TTS（本地/MultiTTS）。关闭不清除其它字段
+  string endpoint = 2;     // 自定义接口地址（留空按 provider 用官方默认）
+  string api_key = 3;      // 鉴权 key
+  string model = 4;        // 自定义模型名（留空按 provider 用默认）
+  string voice = 5;        // 音色名
+  string format = 6;       // 期望返回音频格式（OpenAI 用）：wav / pcm / mp3…
+  int32 sample_rate = 7;   // 若已知返回采样率（Hz），0 表示未知
+  TtsProvider provider = 8; // 接口协议
+
+  // MiMo 专用：
+  string style_prompt = 9;       // user 消息内容：preset 的风格指令 / voicedesign 的音色描述
+  string clone_sample_path = 10; // voiceclone 参考音频样本（filesDir 下相对路径）
+  optional bool mimo_optimize_text_preview = 11; // voicedesign 模式下是否优化文本预预览 (默认 true)
+}
+
+enum TtsProvider {
+  OPENAI = 0;      // OpenAI /audio/speech 协议（及兼容网关）
+  GEMINI = 2;      // Google Gemini generateContent（AUDIO 模态）
+  MIMO = 3;        // 小米 MiMo：/chat/completions + audio 参数，音频在 message 里 base64
+  reserved 1;      // 曾用于 ANTHROPIC——官方无 TTS 接口，已移除
+  reserved "ANTHROPIC";
 }
 
 enum ScopeMode {
@@ -50,12 +98,14 @@ message FloatingWindow {
   FloatingMode default_mode = 2;
   float opacity = 3;
   FloatingSize size = 4;
-  int32 position_x = 5;
-  int32 position_y = 6;
-  bool local_monitor = 7;
-  bool real_mic_mix = 8;
+  // 自定义悬浮球图标相对路径（filesDir/floating/ 下），空则用默认图标
+  string custom_icon_path = 5;
+  bool waveform_enabled = 6;   // 实时波形悬浮窗开关
+  float waveform_opacity = 7;  // 0.0 - 1.0，波形悬浮窗透明度，0 视为默认
+  bool local_monitor = 8;
+  bool real_mic_mix = 9;
   // 虚拟音源注入音量倍率，1.0 = 100%，范围建议 0.0~2.0
-  float output_volume = 9;
+  float output_volume = 10;
 }
 
 enum FloatingMode {
@@ -73,12 +123,22 @@ message Appearance {
   ThemeMode theme = 1;
   bool glass_effect = 2;
   bool reduce_motion = 3;
+
+  AppLanguage language = 4;
+  // false 时启动逻辑会按系统语言自动写入 language 并置为 true，此后不再自动改写。
+  bool language_resolved = 5;
 }
 
 enum ThemeMode {
   FOLLOW_SYSTEM = 0;
   LIGHT = 1;
   DARK = 2;
+}
+
+enum AppLanguage {
+  SYSTEM = 0;
+  ZH = 1;
+  EN = 2;
 }
 
 message Logging {
@@ -99,4 +159,8 @@ message Experimental {
   bool high_gain = 3;
   bool noise_sim = 4;
   bool limiter_enabled = 5;  // 默认 true，保护开关
+  bool reverb_enabled = 6;
+  float reverb_amount = 7;   // 0.0 - 1.0，混响强度
+  bool speed_enabled = 8;
+  float speed_factor = 9;    // 0.5 - 2.0，变速倍率（变速变调），0 视为 1.0
 }

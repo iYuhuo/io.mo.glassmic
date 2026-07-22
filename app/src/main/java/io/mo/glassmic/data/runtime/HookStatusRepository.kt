@@ -25,10 +25,6 @@ data class HookStatus(
     val activity: HookActivity,
     val lastPingMs: Long,
     val lastPackage: String?,
-    val lastResolve: String?,
-    val lastResolveReason: String?,
-    val nativeOk: Boolean?,
-    val audiorecordHooked: Boolean?,
     val api: Int
 )
 
@@ -59,10 +55,6 @@ class HookStatusRepository @Inject constructor(
     fun snapshot(): HookStatus {
         val lastPing = prefs.getLong(Constants.XPOSED_STATUS_LAST_PING, 0L)
         val lastPkg = prefs.getString(Constants.XPOSED_STATUS_LAST_PACKAGE, null)
-        val lastResolve = prefs.getString(Constants.XPOSED_STATUS_LAST_RESOLVE, null)
-        val lastResolveReason = prefs.getString(Constants.XPOSED_STATUS_LAST_RESOLVE_REASON, null)
-        val nativeOkRaw = prefs.getInt(Constants.XPOSED_STATUS_NATIVE_OK, -1)
-        val audiorecordRaw = prefs.getInt(Constants.XPOSED_STATUS_AUDIORECORD_HOOKED, -1)
         val api = prefs.getInt(Constants.XPOSED_STATUS_API, 0)
         val now = System.currentTimeMillis()
         val activity = when {
@@ -74,18 +66,6 @@ class HookStatusRepository @Inject constructor(
             activity = activity,
             lastPingMs = lastPing,
             lastPackage = lastPkg?.takeIf { it.isNotBlank() },
-            lastResolve = lastResolve?.takeIf { it.isNotBlank() },
-            lastResolveReason = lastResolveReason?.takeIf { it.isNotBlank() },
-            nativeOk = when (nativeOkRaw) {
-                1 -> true
-                0 -> false
-                else -> null
-            },
-            audiorecordHooked = when (audiorecordRaw) {
-                1 -> true
-                0 -> false
-                else -> null
-            },
             api = api
         )
     }

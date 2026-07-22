@@ -63,19 +63,16 @@ class EffectiveSourceResolver @Inject constructor(
         if (rt.realMicPassThrough) {
             return ResolveExplanation(SourceType.REAL_MIC, "real_mic_passthrough")
         }
-        // 暂停时 hook 透传真实麦；麦声闪避开关独立，仅在播放虚拟音频时生效
+        // 暂停时 hook 透传真实麦
         if (rt.paused) {
             return ResolveExplanation(SourceType.REAL_MIC, "paused")
         }
-        return ResolveExplanation(rt.currentSourceType, "runtime_${rt.currentSourceType.name.lowercase()}")
-    }
-
-    fun isRealMicMixEnabled(): Boolean {
-        val rt = runtime.value
-        if (!rt.enabled || rt.safeMode || rt.realMicPassThrough || rt.paused) return false
-        if (rt.currentSourceType != SourceType.FILE) return false
-        if (!rt.realMicMixWithDucking) return false
-        return configStore.currentBlocking().floatingWindow.realMicMix
+        // TTS 与 FILE 一样都是"从 PCM 管线注入"，对 Xposed 侧统一按 FILE 处理
+        val source = when (rt.currentSourceType) {
+            SourceType.TTS -> SourceType.FILE
+            else -> rt.currentSourceType
+        }
+        return ResolveExplanation(source, "runtime_${rt.currentSourceType.name.lowercase()}")
     }
 
     /** 给 UI / 通知/ 悬浮窗显示用——和 resolve() 不同，这里返回是否模块整体在运行 */

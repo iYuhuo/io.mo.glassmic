@@ -173,7 +173,7 @@ private fun reasonText(r: SafeModeReason): String = "原因：" + when (r) {
     SafeModeReason.SYSTEM_UI_REPEATED_CRASH -> "30 秒内检测到系统界面异常 2 次以上"
     SafeModeReason.KEY_SYSTEM_PROC_CRASH -> "30 秒内检测到关键系统进程异常"
     SafeModeReason.MODULE_INIT_FAILURE -> "模块初始化连续失败"
-    SafeModeReason.AUDIO_ENGINE_CONTINUOUS_FAILURE -> "60 秒内音频引擎异常过多"
+    SafeModeReason.AUDIO_ENGINE_CONTINUOUS_FAILURE -> "音频引擎连续异常"
     SafeModeReason.LAST_BOOT_DID_NOT_EXIT_CLEANLY -> "上次未正常退出"
     SafeModeReason.USER_EMERGENCY_STOP -> "用户手动紧急停用"
 }

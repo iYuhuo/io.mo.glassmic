@@ -56,6 +56,7 @@ static std::set<const void*> g_recorder_objs;      // CreateAudioRecorder 产出
 static std::map<const void*, RecFmt> g_rec_fmt;    // recorder object -> 录音 PCM 格式
 static std::map<const void*, BqInfo> g_bq_map;     // 录音 bq itf -> 状态
 
+static std::atomic<bool> g_installed{false};
 static void* g_slCreateEngine_stub = nullptr;
 
 // =================== 工具 ===================
@@ -125,16 +126,12 @@ static void my_bq_callback(SLAndroidSimpleBufferQueueItf caller, void* pContext)
         }
     }
 
-    // 此刻队首缓冲已被录音引擎填满麦克风数据——在转交 app 之前覆盖或混音。
+    // 此刻队首缓冲已被录音引擎填满麦克风数据——在转交 app 之前覆盖成虚拟音源。
     if (have_buf && buf && size > 0) {
         int32_t bps = (fmt == SampleFmt::FLOAT) ? 4 : 2;
         int32_t frames = static_cast<int32_t>(size / (static_cast<uint32_t>(ch) * bps));
         if (frames > 0) {
-            if (get_decision() == Decision::FILE && is_mix_enabled()) {
-                mix_virtual_into(const_cast<void*>(buf), fmt, ch, sr, frames);
-            } else {
-                fill_pcm(const_cast<void*>(buf), fmt, ch, sr, frames);
-            }
+            fill_pcm(const_cast<void*>(buf), fmt, ch, sr, frames);
         }
     }
 
@@ -317,7 +314,10 @@ static SLresult my_slCreateEngine(
 }
 
 bool install_opensl_hook() {
-    if (g_slCreateEngine_stub != nullptr) return true;
+    bool expected = false;
+    if (!g_installed.compare_exchange_strong(expected, true)) {
+        return true;
+    }
 
     g_slCreateEngine_stub = shadowhook_hook_sym_name(
         "libOpenSLES.so",
@@ -329,6 +329,7 @@ bool install_opensl_hook() {
         int err = shadowhook_get_errno();
         const char* msg = shadowhook_to_errmsg(err);
         LOGW("hook slCreateEngine failed: err=%d %s", err, msg ? msg : "?");
+        g_installed.store(false);
         return false;
     }
 

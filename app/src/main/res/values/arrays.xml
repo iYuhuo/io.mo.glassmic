@@ -10,9 +10,5 @@
     -->
     <string-array name="xposed_default_scope">
         <item>android</item>
-        <item>system</item>
-        <item>com.tencent.mm</item>
-        <item>com.tencent.mobileqq</item>
-        <item>com.ss.android.ugc.aweme</item>
     </string-array>
 </resources>

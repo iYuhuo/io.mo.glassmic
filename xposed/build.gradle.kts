@@ -8,7 +8,7 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        minSdk = 30
+        minSdk = 29
         consumerProguardFiles("consumer-rules.pro")
 
         ndk {
@@ -26,7 +26,9 @@ android {
                     "-Wall"
                 )
                 arguments += listOf(
-                    "-DANDROID_STL=c++_shared"
+                    // 静态 STL：只有 libglassmic_native.so 用到 libc++（shadowhook 是纯 C），
+                    // 静态链接后不再打包 4KB 对齐的 libc++_shared.so，满足 Android 15+ 16KB 页要求
+                    "-DANDROID_STL=c++_static"
                 )
             }
         }
@@ -35,12 +37,12 @@ android {
     externalNativeBuild {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
-            // 当前装的是 CMake 4.1.2
-            version = "4.1.2"
+            // 稳定版 CMake，元数据 schema 与 AGP 8.x 匹配（避免 CXX5304 警告）
+            version = "3.22.1"
         }
     }
 
-    // 已更新为稳定版 NDK 27.1.12297006（之前使用的 30.0.14904198 rc 版本存在已知 toolchain bugs）
+    // 使用本机可用的 NDK 27（原 r26 安装损坏缺失 source.properties）
     ndkVersion = "27.1.12297006"
 
     buildFeatures {

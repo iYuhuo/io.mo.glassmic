@@ -6,15 +6,21 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import io.mo.glassmic.service.WaveformOverlayService
+import io.mo.glassmic.data.audio.FloatingIconStore
 import io.mo.glassmic.data.config.ConfigStore
 import io.mo.glassmic.data.diag.AudioPipelineProbe
 import io.mo.glassmic.data.diag.DiagnosticBundler
 import io.mo.glassmic.data.runtime.AudioStatsRepository
 import io.mo.glassmic.data.runtime.HookStatus
 import io.mo.glassmic.data.runtime.HookStatusRepository
+import io.mo.glassmic.data.runtime.VisibilityCompatRepository
+import kotlinx.coroutines.flow.asStateFlow
 import io.mo.glassmic.log.GlassLog
+import io.mo.glassmic.data.config.AppLocale
 import io.mo.glassmic.proto.AppConfig
-import io.mo.glassmic.service.FloatingWindowService
+import io.mo.glassmic.proto.AppLanguage
+import io.mo.glassmic.proto.FloatingSize
 import io.mo.glassmic.proto.LogLevel
 import io.mo.glassmic.proto.PlaybackPolicy
 import io.mo.glassmic.proto.ThemeMode
@@ -32,10 +38,6 @@ data class SettingsUiState(
         activity = io.mo.glassmic.data.runtime.HookActivity.NEVER_PINGED,
         lastPingMs = 0L,
         lastPackage = null,
-        lastResolve = null,
-        lastResolveReason = null,
-        nativeOk = null,
-        audiorecordHooked = null,
         api = 0
     ),
     val interceptReads: Long = 0L,
@@ -55,11 +57,35 @@ data class SettingsUiState(
 class SettingsViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val configStore: ConfigStore,
+    private val floatingIconStore: FloatingIconStore,
     private val bundler: DiagnosticBundler,
     private val probe: AudioPipelineProbe,
     private val audioStatsRepo: AudioStatsRepository,
+    private val visibilityCompatRepo: VisibilityCompatRepository,
     hookStatusRepo: HookStatusRepository
 ) : ViewModel() {
+
+    private val _visibilityCompat = MutableStateFlow(visibilityCompatRepo.isEnabled())
+    /** 「严格 ROM 兼容」开关状态，UI 单独 collect。 */
+    val visibilityCompat: StateFlow<Boolean> = _visibilityCompat.asStateFlow()
+
+    /** 每次进入设置页时按系统属性真实值刷新开关（属性非 1 一律显示关闭）。 */
+    fun refreshVisibilityCompat() {
+        _visibilityCompat.value = visibilityCompatRepo.isEnabled()
+    }
+
+    private val _iconError = MutableStateFlow<String?>(null)
+    /** 悬浮球图标导入错误，UI 单独 collect 弹提示。 */
+    val iconError: StateFlow<String?> = _iconError.asStateFlow()
+
+    fun setVisibilityCompat(enabled: Boolean) {
+        _visibilityCompat.value = enabled  // 立即回显
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val ok = visibilityCompatRepo.setEnabled(enabled)
+            // 开启时若 Root 写入失败（多半是未授权 su），回滚开关让用户察觉。
+            if (enabled && !ok) _visibilityCompat.value = false
+        }
+    }
 
     private val _exporting = MutableStateFlow(false)
     private val _exportedUri = MutableStateFlow<Uri?>(null)
@@ -105,17 +131,55 @@ class SettingsViewModel @Inject constructor(
         configStore.update { it.setAppearance(it.appearance.toBuilder().setReduceMotion(reduce)) }
     }
 
+    fun setLanguage(language: AppLanguage) {
+        // 同步执行：调用方（设置页）选完语言后会立即 recreate() 让改动马上生效，
+        // 必须保证 SharedPreferences 缓存 + AppCompatDelegate 的语言在 recreate() 之前就已写入，
+        // 否则会因为协程还没跑到这里而导致第一次点击"没反应"，要点第二次才生效。
+        AppLocale.apply(context, language)
+        viewModelScope.launch {
+            configStore.update {
+                it.setAppearance(it.appearance.toBuilder().setLanguage(language).setLanguageResolved(true))
+            }
+        }
+    }
+
     // ============ 悬浮窗 ============
     fun setFloatingEnabled(enabled: Boolean) = viewModelScope.launch {
         configStore.update { it.setFloatingWindow(it.floatingWindow.toBuilder().setEnabled(enabled)) }
-        if (!enabled) {
-            FloatingWindowService.stop(context)
-        }
     }
 
     fun setFloatingOpacity(opacity: Float) = viewModelScope.launch {
         configStore.update {
             it.setFloatingWindow(it.floatingWindow.toBuilder().setOpacity(opacity.coerceIn(0.2f, 1f)))
+        }
+    }
+
+    fun setFloatingSize(size: FloatingSize) = viewModelScope.launch {
+        configStore.update { it.setFloatingWindow(it.floatingWindow.toBuilder().setSize(size)) }
+    }
+
+    /** 导入自定义悬浮球图标：复制到私有目录并持久化相对路径。传 null 表示清除，回退默认图标。 */
+    fun setFloatingIcon(uri: Uri?) = viewModelScope.launch {
+        val relPath = if (uri == null) "" else floatingIconStore.importIcon(uri) ?: run {
+            _iconError.value = "图标导入失败"
+            return@launch
+        }
+        configStore.update { it.setFloatingWindow(it.floatingWindow.toBuilder().setCustomIconPath(relPath)) }
+    }
+
+    fun consumeIconError() { _iconError.value = null }
+
+    // ============ 实时波形悬浮窗 ============
+    fun setWaveformEnabled(enabled: Boolean) = viewModelScope.launch {
+        configStore.update {
+            it.setFloatingWindow(it.floatingWindow.toBuilder().setWaveformEnabled(enabled))
+        }
+        if (enabled) WaveformOverlayService.start(context) else WaveformOverlayService.stop(context)
+    }
+
+    fun setWaveformOpacity(opacity: Float) = viewModelScope.launch {
+        configStore.update {
+            it.setFloatingWindow(it.floatingWindow.toBuilder().setWaveformOpacity(opacity.coerceIn(0.15f, 1f)))
         }
     }
 
@@ -176,6 +240,26 @@ class SettingsViewModel @Inject constructor(
         configStore.update { it.setExperimental(it.experimental.toBuilder().setLimiterEnabled(v)) }
     }
 
+    fun setReverbEnabled(v: Boolean) = viewModelScope.launch {
+        configStore.update { it.setExperimental(it.experimental.toBuilder().setReverbEnabled(v)) }
+    }
+
+    fun setReverbAmount(v: Float) = viewModelScope.launch {
+        configStore.update {
+            it.setExperimental(it.experimental.toBuilder().setReverbAmount(v.coerceIn(0f, 1f)))
+        }
+    }
+
+    fun setSpeedEnabled(v: Boolean) = viewModelScope.launch {
+        configStore.update { it.setExperimental(it.experimental.toBuilder().setSpeedEnabled(v)) }
+    }
+
+    fun setSpeedFactor(v: Float) = viewModelScope.launch {
+        configStore.update {
+            it.setExperimental(it.experimental.toBuilder().setSpeedFactor(v.coerceIn(0.5f, 2.0f)))
+        }
+    }
+
     // ============ 管线自检 + 统计 ============
     fun runPipelineProbe() {
         if (_probing.value) return
@@ -188,6 +272,4 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun consumeProbe() { _probeResult.value = null }
-
-    fun resetInterceptStats() { audioStatsRepo.reset() }
 }

@@ -9,7 +9,6 @@ import io.mo.glassmic.proto.Experimental
 import io.mo.glassmic.proto.FloatingMode
 import io.mo.glassmic.proto.FloatingSize
 import io.mo.glassmic.proto.FloatingWindow
-import io.mo.glassmic.service.FloatingWindowConstants
 import io.mo.glassmic.proto.LogLevel
 import io.mo.glassmic.proto.Logging
 import io.mo.glassmic.proto.PlaybackPolicy
@@ -33,11 +32,8 @@ object AppConfigSerializer : Serializer<AppConfig> {
                 .setDefaultMode(FloatingMode.PILL)
                 .setOpacity(0.85f)
                 .setSize(FloatingSize.STANDARD)
-                .setPositionX(FloatingWindowConstants.POSITION_UNSET)
-                .setPositionY(FloatingWindowConstants.POSITION_UNSET)
-                .setLocalMonitor(false)
-                .setRealMicMix(false)
-                .setOutputVolume(1f)
+                .setWaveformOpacity(0.6f)   // 波形悬浮窗默认半透明
+                .setOutputVolume(1f)        // 明确默认音量，避免 0 被当成「未设置」
         )
         .setAppearance(
             Appearance.newBuilder()
@@ -54,6 +50,8 @@ object AppConfigSerializer : Serializer<AppConfig> {
             Experimental.newBuilder()
                 .setUnlocked(false)        // 实验功能默认锁定
                 .setLimiterEnabled(true)   // 限幅保护默认开
+                .setReverbAmount(0.5f)     // 混响强度默认中等
+                .setSpeedFactor(1.0f)      // 变速默认原速
         )
         .build()
 

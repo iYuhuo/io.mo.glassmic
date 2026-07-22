@@ -5,17 +5,15 @@
 #include <shadowhook.h>
 
 #include <atomic>
-#include <cmath>
 #include <cerrno>
+#include <cstdint>
 #include <cstring>
 #include <mutex>
 #include <unistd.h>
-#include <vector>
 
 namespace glass {
 
 static std::atomic<int32_t> g_decision{static_cast<int32_t>(Decision::REAL_MIC)};
-static std::atomic<bool> g_mix_enabled{false};
 static std::atomic<bool> g_hook_installed{false};
 
 struct PcmFdState {
@@ -136,6 +134,59 @@ static void convert_and_write(
     }
 }
 
+// 舒适噪声幅度：±8 LSB ≈ -72 dBFS，人耳不可闻，但足以让下游 App 的 VAD 判定"有信号"。
+// 与 Kotlin 侧 io.mo.glassmic.core.audio.ComfortNoise / app 侧 ComfortNoiseSource 保持一致。
+static constexpr int32_t kComfortAmplitude = 8;
+
+// 轻量 xorshift32，仅用于生成极低电平噪声，无需密码学质量。每线程独立种子。
+static inline int32_t next_comfort_sample() {
+    static thread_local uint32_t s =
+        0x9E3779B9u ^ static_cast<uint32_t>(reinterpret_cast<uintptr_t>(&s));
+    s ^= s << 13; s ^= s >> 17; s ^= s << 5;
+    return static_cast<int32_t>(s % (2u * kComfortAmplitude + 1u)) - kComfortAmplitude;
+}
+
+// 用舒适噪声填满输入缓冲，替代纯 0 静音——纯数字 0 是"死麦"特征，
+// 微信等录音端持续读到全 0 会判"无音频输入/麦克风被占用"而中断录音。
+// 按各 PCM 格式把 16bit 域的低电平样本换算写入（换算方式与 convert_and_write 一致）。
+static void fill_comfort_noise(
+    void* buffer, aaudio_format_t fmt, int32_t channels, int32_t numFrames
+) {
+    const int64_t samples = static_cast<int64_t>(numFrames) * channels;
+    switch (fmt) {
+        case AAUDIO_FORMAT_PCM_I16: {
+            auto* d = static_cast<int16_t*>(buffer);
+            for (int64_t i = 0; i < samples; ++i) *d++ = static_cast<int16_t>(next_comfort_sample());
+            break;
+        }
+        case AAUDIO_FORMAT_PCM_FLOAT: {
+            auto* d = static_cast<float*>(buffer);
+            constexpr float kScale = 1.0f / 32768.0f;
+            for (int64_t i = 0; i < samples; ++i) *d++ = next_comfort_sample() * kScale;
+            break;
+        }
+        case AAUDIO_FORMAT_PCM_I32: {
+            auto* d = static_cast<int32_t*>(buffer);
+            for (int64_t i = 0; i < samples; ++i) *d++ = next_comfort_sample() << 16;
+            break;
+        }
+        case AAUDIO_FORMAT_PCM_I24_PACKED: {
+            auto* d = static_cast<uint8_t*>(buffer);
+            for (int64_t i = 0; i < samples; ++i) {
+                int32_t v = next_comfort_sample() << 8;
+                *d++ = static_cast<uint8_t>(v & 0xFF);
+                *d++ = static_cast<uint8_t>((v >> 8) & 0xFF);
+                *d++ = static_cast<uint8_t>((v >> 16) & 0xFF);
+            }
+            break;
+        }
+        default:
+            std::memset(buffer, 0,
+                        static_cast<size_t>(numFrames) * channels * bytes_per_dst_sample(fmt));
+            break;
+    }
+}
+
 static int read_full(int fd, uint8_t* buf, int n) {
     int got = 0;
     while (got < n) {
@@ -150,161 +201,6 @@ static int read_full(int fd, uint8_t* buf, int n) {
         }
     }
     return got;
-}
-
-static bool read_virtual_mono_s16(
-    int32_t dst_frames,
-    int32_t dst_sample_rate,
-    int16_t* out,
-    int32_t out_cap_frames,
-    int32_t* out_frames
-) {
-    if (out_frames) *out_frames = 0;
-    if (!out || dst_frames <= 0 || out_cap_frames <= 0) return false;
-
-    int fd = -1;
-    int32_t src_channels = 1;
-    int32_t src_sample_rate = 48'000;
-    {
-        std::lock_guard<std::mutex> lock(g_fd_mutex);
-        fd = g_fd_state.fd;
-        src_channels = g_fd_state.channels > 0 ? g_fd_state.channels : 1;
-        src_sample_rate = g_fd_state.sample_rate > 0 ? g_fd_state.sample_rate : 48'000;
-    }
-    if (fd < 0) return false;
-    if (dst_sample_rate <= 0) dst_sample_rate = 48'000;
-
-    int32_t need_src_frames = static_cast<int32_t>(
-        (static_cast<int64_t>(dst_frames) * src_sample_rate + dst_sample_rate - 1) / dst_sample_rate
-    );
-    if (need_src_frames <= 0) need_src_frames = dst_frames;
-    if (need_src_frames > out_cap_frames) need_src_frames = out_cap_frames;
-
-    int need_bytes = need_src_frames * src_channels * 2;
-    // 大缓冲分块读，避免微信/QQ 单次 read 超过 32KB 时直接放弃虚拟音源
-    std::vector<uint8_t> tmp(static_cast<size_t>(need_bytes));
-    int got = read_full(fd, tmp.data(), need_bytes);
-    if (got <= 0) return false;
-
-    int got_frames = got / (src_channels * 2);
-    if (got_frames <= 0) return false;
-
-    const auto* src = reinterpret_cast<const int16_t*>(tmp.data());
-    for (int32_t f = 0; f < dst_frames && f < out_cap_frames; ++f) {
-        int32_t si = map_src_frame(f, got_frames, dst_frames);
-        out[f] = src[si * src_channels];
-    }
-    if (out_frames) *out_frames = dst_frames;
-    return true;
-}
-
-// =================== 真实麦混音闪避（与 RealMicMixer.kt 对齐） ===================
-
-static float g_duck_envelope = 0.55f;
-
-static float rms_s16_samples(const int16_t* samples, int32_t count) {
-    if (count <= 0) return 0.f;
-    double sum_sq = 0.0;
-    for (int32_t i = 0; i < count; ++i) {
-        const double s = samples[i];
-        sum_sq += s * s;
-    }
-    return static_cast<float>(std::sqrt(sum_sq / count));
-}
-
-static float rms_float_samples(const float* samples, int32_t count) {
-    if (count <= 0) return 0.f;
-    double sum_sq = 0.0;
-    for (int32_t i = 0; i < count; ++i) {
-        const double s = samples[i] * 32768.0;
-        sum_sq += s * s;
-    }
-    return static_cast<float>(std::sqrt(sum_sq / count));
-}
-
-static float update_duck_envelope(float rms) {
-    constexpr float kThreshold = 550.f;
-    constexpr float kFullScale = 10'000.f;
-    constexpr float kMinDuck = 0.03f;
-    constexpr float kMaxVirtual = 0.55f;
-    constexpr float kAttack = 0.55f;
-    constexpr float kRelease = 0.12f;
-
-    float target = kMaxVirtual;
-    if (rms >= kThreshold) {
-        float t = (rms - kThreshold) / (kFullScale - kThreshold);
-        if (t < 0.f) t = 0.f;
-        if (t > 1.f) t = 1.f;
-        target = kMaxVirtual + (kMinDuck - kMaxVirtual) * t;
-    }
-    if (target < g_duck_envelope) {
-        g_duck_envelope += (target - g_duck_envelope) * kAttack;
-    } else {
-        g_duck_envelope += (target - g_duck_envelope) * kRelease;
-    }
-    return g_duck_envelope;
-}
-
-static void record_mix_stats(int32_t sample_rate, int32_t channels, int32_t bytes) {
-    g_pending_reads.fetch_add(1, std::memory_order_relaxed);
-    g_pending_bytes.fetch_add(static_cast<uint64_t>(bytes > 0 ? bytes : 1), std::memory_order_relaxed);
-    g_last_sr.store(sample_rate, std::memory_order_relaxed);
-    g_last_ch.store(channels, std::memory_order_relaxed);
-}
-
-bool mix_virtual_into(
-    void* buffer,
-    SampleFmt fmt,
-    int32_t channels,
-    int32_t sample_rate,
-    int32_t frames
-) {
-    if (!buffer || frames <= 0 || channels <= 0) return false;
-    if (!is_mix_enabled()) return false;
-    if (get_decision() != Decision::FILE) return false;
-    if (sample_rate <= 0) sample_rate = 48'000;
-
-    int16_t virt[8192];
-    int32_t virt_frames = 0;
-    if (!read_virtual_mono_s16(frames, sample_rate, virt, 8192, &virt_frames) || virt_frames <= 0) {
-        return false;
-    }
-
-    if (fmt == SampleFmt::FLOAT) {
-        auto* samples = static_cast<float*>(buffer);
-        const int32_t count = frames * channels;
-        const float duck = update_duck_envelope(rms_float_samples(samples, count));
-        for (int32_t f = 0; f < frames; ++f) {
-            const int32_t vi = map_src_frame(f, virt_frames, frames);
-            const float v = (virt[vi] / 32768.f) * duck;
-            for (int32_t c = 0; c < channels; ++c) {
-                const int32_t idx = f * channels + c;
-                float mixed = samples[idx] + v;
-                if (mixed > 1.f) mixed = 1.f;
-                if (mixed < -1.f) mixed = -1.f;
-                samples[idx] = mixed;
-            }
-        }
-        record_mix_stats(sample_rate, channels, count * 4);
-        return true;
-    }
-
-    auto* samples = static_cast<int16_t*>(buffer);
-    const int32_t count = frames * channels;
-    const float duck = update_duck_envelope(rms_s16_samples(samples, count));
-    for (int32_t f = 0; f < frames; ++f) {
-        const int32_t vi = map_src_frame(f, virt_frames, frames);
-        const int32_t v = static_cast<int32_t>(virt[vi] * duck);
-        for (int32_t c = 0; c < channels; ++c) {
-            const int32_t idx = f * channels + c;
-            int32_t mixed = static_cast<int32_t>(samples[idx]) + v;
-            if (mixed > 32767) mixed = 32767;
-            if (mixed < -32768) mixed = -32768;
-            samples[idx] = static_cast<int16_t>(mixed);
-        }
-    }
-    record_mix_stats(sample_rate, channels, count * 2);
-    return true;
 }
 
 /**
@@ -337,11 +233,9 @@ static FillResult fill_pcm_impl(
     if (dst_sample_rate <= 0) dst_sample_rate = 48'000;
 
     if (decision == Decision::SILENCE) {
-        std::memset(
-            buffer,
-            0,
-            static_cast<size_t>(numFrames) * dst_channels * bytes_per_dst_sample(dst_fmt)
-        );
+        // 填舒适噪声而非纯 0：与 Java AudioRecordHook 的 SILENCE 分支一致，
+        // 避免微信等把持续全 0 判为"无输入/麦克风被占用"而中断录音。
+        fill_comfort_noise(buffer, dst_fmt, dst_channels, numFrames);
         g_pending_reads.fetch_add(1, std::memory_order_relaxed);
         g_pending_bytes.fetch_add(static_cast<uint64_t>(numFrames) * dst_channels * 2, std::memory_order_relaxed);
         g_last_sr.store(dst_sample_rate, std::memory_order_relaxed);
@@ -349,7 +243,7 @@ static FillResult fill_pcm_impl(
         return FillResult::FILLED;
     }
 
-    // decision == FILE — pipe 未就绪时输出静音，避免泄漏真实麦克风
+    // decision == FILE
     int fd = -1;
     int32_t src_channels = 1;
     int32_t src_sample_rate = 48'000;
@@ -359,12 +253,7 @@ static FillResult fill_pcm_impl(
         src_channels = g_fd_state.channels > 0 ? g_fd_state.channels : 1;
         src_sample_rate = g_fd_state.sample_rate > 0 ? g_fd_state.sample_rate : 48'000;
     }
-
-    const size_t dst_bytes = static_cast<size_t>(numFrames) * dst_channels * bytes_per_dst_sample(dst_fmt);
-    if (fd < 0) {
-        std::memset(buffer, 0, dst_bytes);
-        return FillResult::FILLED;
-    }
+    if (fd < 0) return FillResult::PASS;
 
     int32_t need_src_frames = static_cast<int32_t>(
         (static_cast<int64_t>(numFrames) * src_sample_rate + dst_sample_rate - 1) / dst_sample_rate
@@ -372,11 +261,18 @@ static FillResult fill_pcm_impl(
     if (need_src_frames <= 0) need_src_frames = numFrames;
 
     int need_bytes = need_src_frames * src_channels * 2;
-    std::vector<uint8_t> tmp(static_cast<size_t>(need_bytes));
-    int got = read_full(fd, tmp.data(), need_bytes);
+    if (need_bytes > 32 * 1024) return FillResult::PASS;
+
+    uint8_t tmp[32 * 1024];
+    int got = read_full(fd, tmp, need_bytes);
     if (got <= 0) {
-        std::memset(buffer, 0, dst_bytes);
-        return FillResult::FILLED;
+        // 写端已关 / EOF：丢掉死 fd，让 Kotlin 轮询重新 openFileDescriptor
+        std::lock_guard<std::mutex> lock(g_fd_mutex);
+        if (g_fd_state.fd == fd) {
+            if (g_fd_state.fd >= 0) ::close(g_fd_state.fd);
+            g_fd_state.fd = -1;
+        }
+        return FillResult::PASS;
     }
 
     int got_frames = got / (src_channels * 2);
@@ -384,7 +280,7 @@ static FillResult fill_pcm_impl(
         buffer,
         dst_fmt,
         dst_channels,
-        reinterpret_cast<int16_t*>(tmp.data()),
+        reinterpret_cast<int16_t*>(tmp),
         got_frames,
         src_channels,
         numFrames
@@ -431,37 +327,10 @@ static aaudio_result_t my_AAudioStream_read(
         return g_orig_AAudioStream_read(stream, buffer, numFrames, timeoutNanos);
     }
 
-    const Decision decision = get_decision();
-    if (decision == Decision::REAL_MIC) {
-        return g_orig_AAudioStream_read(stream, buffer, numFrames, timeoutNanos);
-    }
-
-    if (decision == Decision::FILE && is_mix_enabled()) {
-        const aaudio_result_t n = g_orig_AAudioStream_read(stream, buffer, numFrames, timeoutNanos);
-        if (n > 0) {
-            int32_t ch = AAudioStream_getChannelCount(stream);
-            if (ch <= 0) ch = 1;
-            int32_t sr = AAudioStream_getSampleRate(stream);
-            if (sr <= 0) sr = 48'000;
-            const aaudio_format_t fmt = AAudioStream_getFormat(stream);
-            const SampleFmt sf = (fmt == AAUDIO_FORMAT_PCM_FLOAT) ? SampleFmt::FLOAT : SampleFmt::S16;
-            mix_virtual_into(buffer, sf, ch, sr, n);
-        }
-        return n;
-    }
-
     if (fill_input_buffer(stream, buffer, numFrames) == FillResult::FILLED) {
         return numFrames;
     }
-    // FILE 但虚拟轨暂不可读 — 静音而非真实麦
-    const int32_t ch = AAudioStream_getChannelCount(stream);
-    const aaudio_format_t fmt = AAudioStream_getFormat(stream);
-    std::memset(
-        buffer,
-        0,
-        static_cast<size_t>(numFrames) * (ch > 0 ? ch : 1) * bytes_per_dst_sample(fmt)
-    );
-    return numFrames;
+    return g_orig_AAudioStream_read(stream, buffer, numFrames, timeoutNanos);
 }
 
 // =================== data-callback 路径 ===================
@@ -487,20 +356,7 @@ static aaudio_data_callback_result_t my_data_callback(
     // 仅对输入流改写；输出流（播放）原样转交。
     if (stream && audioData && numFrames > 0 &&
         AAudioStream_getDirection(stream) == AAUDIO_DIRECTION_INPUT) {
-        const Decision decision = get_decision();
-        if (decision == Decision::REAL_MIC) {
-            // pass through
-        } else if (decision == Decision::FILE && is_mix_enabled()) {
-            int32_t ch = AAudioStream_getChannelCount(stream);
-            if (ch <= 0) ch = 1;
-            int32_t sr = AAudioStream_getSampleRate(stream);
-            if (sr <= 0) sr = 48'000;
-            const aaudio_format_t fmt = AAudioStream_getFormat(stream);
-            const SampleFmt sf = (fmt == AAUDIO_FORMAT_PCM_FLOAT) ? SampleFmt::FLOAT : SampleFmt::S16;
-            mix_virtual_into(audioData, sf, ch, sr, numFrames);
-        } else {
-            fill_input_buffer(stream, audioData, numFrames);
-        }
+        fill_input_buffer(stream, audioData, numFrames);
     }
 
     if (w && w->orig_cb) {
@@ -529,7 +385,10 @@ static void my_setDataCallback(
 }
 
 bool install_aaudio_hook() {
-    if (g_read_hook_stub != nullptr) return true;
+    bool expected = false;
+    if (!g_hook_installed.compare_exchange_strong(expected, true)) {
+        return true;
+    }
 
     g_read_hook_stub = shadowhook_hook_sym_name(
         "libaaudio.so",
@@ -541,9 +400,9 @@ bool install_aaudio_hook() {
         int err = shadowhook_get_errno();
         const char* msg = shadowhook_to_errmsg(err);
         LOGE("hook AAudioStream_read failed: err=%d %s", err, msg ? msg : "?");
+        g_hook_installed.store(false);
         return false;
     }
-    g_hook_installed.store(true);
     LOGI("AAudioStream_read hook installed");
 
     // data-callback 路径——失败不致命，阻塞 read 路径仍可用。
@@ -572,16 +431,6 @@ Decision get_decision() {
     return static_cast<Decision>(g_decision.load(std::memory_order_relaxed));
 }
 
-void set_mix_enabled(bool enabled) {
-    g_mix_enabled.store(enabled, std::memory_order_relaxed);
-    // 与 Java RealMicMixer.resetEnvelope() 对齐，避免开关切换后闪避包络残留
-    g_duck_envelope = 0.85f;
-}
-
-bool is_mix_enabled() {
-    return g_mix_enabled.load(std::memory_order_relaxed);
-}
-
 void set_pcm_fd(int fd, int32_t sample_rate, int32_t channels) {
     int old_fd = -1;
     {
@@ -596,6 +445,11 @@ void set_pcm_fd(int fd, int32_t sample_rate, int32_t channels) {
         ::close(old_fd);
     }
     LOGI("set_pcm_fd fd=%d sr=%d ch=%d", fd, sample_rate, channels);
+}
+
+bool has_pcm_fd() {
+    std::lock_guard<std::mutex> lock(g_fd_mutex);
+    return g_fd_state.fd >= 0;
 }
 
 void drain_stats(

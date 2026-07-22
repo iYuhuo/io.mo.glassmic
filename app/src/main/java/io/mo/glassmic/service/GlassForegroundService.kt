@@ -52,16 +52,15 @@ class GlassForegroundService : LifecycleService() {
             if (playback.restorePersistedClip()) {
                 GlassLog.b("FgService") { "restored persisted audio source" }
             }
-            playback.applyLocalMonitorPreference()
-            playback.applyRealMicMixPreference()
-            // 恢复音源后保持暂停，需用户手动点播放才开始注入（与 README 一致）
         }
         GlassLog.b("FgService") { "前台服务启动，常驻通知已显示" }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
-        return START_STICKY
+        // 被系统杀掉后不自动拉起——与「不在用户没主动启用时启动」的要求一致，
+        // 异常退出由 RUNNING_SENTINEL + SafeModeWatchdog 检测处理，不靠 sticky 复活掩盖。
+        return START_NOT_STICKY
     }
 
     override fun onBind(intent: Intent): IBinder? {
@@ -70,7 +69,6 @@ class GlassForegroundService : LifecycleService() {
     }
 
     override fun onDestroy() {
-        playback.setLocalMonitorRuntime(false)
         runtime.setEnabled(false)
         // 清理运行哨兵——表示本次正常退出
         runCatching { File(filesDir, Constants.RUNNING_SENTINEL).delete() }
@@ -99,6 +97,7 @@ class GlassForegroundService : LifecycleService() {
             ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
         }
 
+        // 依次尝试：首选类型 → specialUse → 无类型。任一成功即返回。
         val attempts = linkedSetOf(
             preferred,
             ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE

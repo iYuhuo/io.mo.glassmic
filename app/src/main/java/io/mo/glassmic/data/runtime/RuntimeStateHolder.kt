@@ -32,8 +32,7 @@ class RuntimeStateHolder @Inject constructor() {
         } else {
             it.copy(
                 enabled = false,
-                realMicPassThrough = false,
-                realMicMixWithDucking = false
+                realMicPassThrough = false
             )
         }
     }
@@ -52,16 +51,16 @@ class RuntimeStateHolder @Inject constructor() {
             currentAudioId = audioId,
             durationMs = durationMs,
             positionMs = 0L,
-            realMicPassThrough = if (type == SourceType.FILE) it.realMicPassThrough else false,
-            realMicMixWithDucking = if (type == SourceType.FILE) it.realMicMixWithDucking else false
+            realMicPassThrough = if (type == SourceType.FILE || type == SourceType.TTS) {
+                it.realMicPassThrough
+            } else {
+                false
+            }
         )
     }
 
     fun setRealMicPassThrough(active: Boolean) =
         _flow.update { it.copy(realMicPassThrough = active) }
-
-    fun setRealMicMixWithDucking(active: Boolean) =
-        _flow.update { it.copy(realMicMixWithDucking = active) }
 
     fun setPosition(positionMs: Long) =
         _flow.update { it.copy(positionMs = positionMs) }

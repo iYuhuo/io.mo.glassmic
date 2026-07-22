@@ -17,10 +17,9 @@ import java.util.concurrent.atomic.AtomicLong
  */
 object XBridge {
 
-    private const val CACHE_TTL_MS = 200L
+    private const val CACHE_TTL_MS = 0L
 
     private var cachedSource: SourceType? = null
-    private var cachedMix = false
     private var cachedResolveReason: String = "unknown"
     private var cachedAt: Long = 0L
     private var cachedPkg: String = ""
@@ -133,11 +132,6 @@ object XBridge {
         return (cachedSource ?: SourceType.REAL_MIC) to cachedResolveReason
     }
 
-    fun isRealMicMixEnabled(ctx: Context, callerPackage: String): Boolean {
-        refreshCache(ctx, callerPackage)
-        return cachedMix
-    }
-
     private fun refreshCache(ctx: Context, callerPackage: String) {
         val now = System.currentTimeMillis()
         if (cachedPkg == callerPackage && cachedSource != null && now - cachedAt < CACHE_TTL_MS) {
@@ -145,22 +139,20 @@ object XBridge {
         }
         val result = queryProvider(ctx.contentResolver, callerPackage)
         cachedSource = result.first
-        cachedMix = result.second
-        cachedResolveReason = result.third
+        cachedResolveReason = result.second
         cachedAt = now
         cachedPkg = callerPackage
     }
 
-    private fun queryProvider(cr: ContentResolver, pkg: String): Triple<SourceType, Boolean, String> {
+    private fun queryProvider(cr: ContentResolver, pkg: String): Pair<SourceType, String> {
         val uri = Uri.parse("content://${Constants.PROVIDER_RUNTIME}/resolve")
         return runCatching {
             cr.query(uri, null, null, arrayOf(pkg), null)?.use { c ->
-                if (!c.moveToFirst()) return@use Triple(SourceType.REAL_MIC, false, "query_empty")
+                if (!c.moveToFirst()) return@use SourceType.REAL_MIC to "query_empty"
                 val src = SourceType.valueOf(c.getString(0))
-                val mix = c.columnCount > 4 && c.getInt(4) == 1
                 val reason = if (c.columnCount > 5) c.getString(5) ?: "unknown" else "unknown"
-                Triple(src, mix, reason)
-            } ?: Triple(SourceType.REAL_MIC, false, "query_null")
-        }.getOrDefault(Triple(SourceType.REAL_MIC, false, "query_error"))
+                src to reason
+            } ?: (SourceType.REAL_MIC to "query_null")
+        }.getOrDefault(SourceType.REAL_MIC to "query_error")
     }
 }

@@ -12,7 +12,6 @@ import dagger.hilt.InstallIn
 import dagger.hilt.android.EntryPointAccessors
 import dagger.hilt.components.SingletonComponent
 import io.mo.glassmic.core.Constants
-import io.mo.glassmic.core.model.SourceType
 import io.mo.glassmic.data.runtime.EffectiveSourceResolver
 
 /**
@@ -44,7 +43,6 @@ class RuntimeProvider : ContentProvider() {
         val resolver = entryPoint().resolver()
         val explained = resolver.explain(pkg)
         val snap = resolver.configSnapshot()
-        val mix = if (explained.source == SourceType.FILE) resolver.isRealMicMixEnabled() else false
         return MatrixCursor(
             arrayOf("source", "group_id", "audio_id", "global_switch", "real_mic_mix", "resolve_reason")
         ).apply {
@@ -54,7 +52,7 @@ class RuntimeProvider : ContentProvider() {
                     "",
                     "",
                     if (snap.globalSwitch) 1 else 0,
-                    if (mix) 1 else 0,
+                    0, // 麦声闪避已移除；保留列以兼容旧 Xposed 缓存解析
                     explained.reason
                 )
             )
@@ -69,24 +67,10 @@ class RuntimeProvider : ContentProvider() {
                 val prefs = context?.getSharedPreferences(Constants.XPOSED_STATUS_PREFS, Context.MODE_PRIVATE)
                 val api = extras?.getInt("api") ?: 101
                 val oldApi = prefs?.getInt(Constants.XPOSED_STATUS_API, 0) ?: 0
-                val resolve = extras?.getString("resolve")
-                val resolveReason = extras?.getString("resolve_reason")
-                val nativeOk = extras?.getInt("native_ok", -1) ?: -1
-                val audiorecordHooked = extras?.getInt("audiorecord_hooked", -1) ?: -1
                 prefs?.edit()
                     ?.putLong(Constants.XPOSED_STATUS_LAST_PING, now)
                     ?.putString(Constants.XPOSED_STATUS_LAST_PACKAGE, pkg)
                     ?.putInt(Constants.XPOSED_STATUS_API, maxOf(oldApi, api))
-                    ?.apply {
-                        if (resolve != null) putString(Constants.XPOSED_STATUS_LAST_RESOLVE, resolve)
-                        if (resolveReason != null) {
-                            putString(Constants.XPOSED_STATUS_LAST_RESOLVE_REASON, resolveReason)
-                        }
-                        if (nativeOk >= 0) putInt(Constants.XPOSED_STATUS_NATIVE_OK, nativeOk)
-                        if (audiorecordHooked >= 0) {
-                            putInt(Constants.XPOSED_STATUS_AUDIORECORD_HOOKED, audiorecordHooked)
-                        }
-                    }
                     ?.apply()
                 return Bundle().apply { putBoolean("ok", true) }
             }

@@ -15,8 +15,6 @@ data class RuntimeState(
     val paused: Boolean = false,
     /** 虚拟音源仍保留，但 hook 侧透传真实麦克风（与 paused 等效，保留供内部状态）。 */
     val realMicPassThrough: Boolean = false,
-    /** 虚拟音频与真实麦同时输出，并对虚拟轨做闪避（悬浮窗「麦声闪避」）。 */
-    val realMicMixWithDucking: Boolean = false,
     val playbackPolicy: PlaybackPolicy = PlaybackPolicy.LOOP,
     val floatingWindowVisible: Boolean = false,
     val lastError: String? = null

@@ -13,6 +13,5 @@ namespace glass {
  * 线程安全，重复调用安全。失败不致命。
  */
 bool install_audiorecord_hook();
-bool is_audiorecord_hooked();
 
 } // namespace glass

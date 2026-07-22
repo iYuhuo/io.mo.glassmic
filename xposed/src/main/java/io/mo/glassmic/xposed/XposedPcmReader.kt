@@ -36,7 +36,11 @@ class XposedPcmReader(
             while (remaining > 0) {
                 val want = minOf(remaining, tempBuf.size)
                 val n = stream.read(tempBuf, 0, want)
-                if (n <= 0) break
+                if (n <= 0) {
+                    // 写端已关：丢掉死流，下次 ensureStream 会 open 新 pipe
+                    closeStream()
+                    break
+                }
                 out.put(tempBuf, 0, n)
                 totalWritten += n
                 remaining -= n
@@ -54,7 +58,10 @@ class XposedPcmReader(
             var totalRead = 0
             while (totalRead < size) {
                 val n = stream.read(out, offset + totalRead, size - totalRead)
-                if (n <= 0) break
+                if (n <= 0) {
+                    closeStream()
+                    break
+                }
                 totalRead += n
             }
             totalRead

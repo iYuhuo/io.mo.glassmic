@@ -1,13 +1,14 @@
 package io.mo.glassmic.ui.home
 
 import android.content.Context
-import android.widget.Toast
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import io.mo.glassmic.R
 import io.mo.glassmic.core.model.SourceType
 import io.mo.glassmic.data.audio.PlaybackController
+import io.mo.glassmic.data.config.AppLocale
 import io.mo.glassmic.data.config.ConfigStore
 import io.mo.glassmic.data.db.AudioDao
 import io.mo.glassmic.data.runtime.BootGateRepository
@@ -18,7 +19,6 @@ import io.mo.glassmic.data.runtime.RuntimeStateHolder
 import io.mo.glassmic.data.runtime.SafeModeRepository
 import io.mo.glassmic.proto.PlaybackPolicy as ProtoPolicy
 import io.mo.glassmic.proto.ScopeMode as ProtoScope
-import io.mo.glassmic.R
 import io.mo.glassmic.service.FloatingWindowService
 import io.mo.glassmic.service.GlassForegroundService
 import kotlinx.coroutines.flow.SharingStarted
@@ -36,16 +36,12 @@ data class HomeUiState(
     val groupName: String = "—",
     val policyLabel: String = "循环",
     val scopeLabel: String = "全局",
-    val floatingLabel: String = "关闭",
+    val floatingWindowVisible: Boolean = false,
     val positionMs: Long = 0L,
     val durationMs: Long = 0L,
     val progress: Float = 0f,
     val hookActivity: HookActivity = HookActivity.NEVER_PINGED,
     val hookLastPkg: String? = null,
-    val hookLastResolve: String? = null,
-    val hookLastResolveReason: String? = null,
-    val hookNativeOk: Boolean? = null,
-    val hookAudiorecordHooked: Boolean? = null,
     val hookLastPingMs: Long = 0L,
     val hookApi: Int = 0,
     val interceptReads: Long = 0L,
@@ -88,32 +84,29 @@ class HomeViewModel @Inject constructor(
             paused = rt.paused,
             sourceName = when (rt.currentSourceType) {
                 SourceType.FILE -> clip?.displayName ?: rt.currentAudioId ?: "—"
-                SourceType.REAL_MIC -> "真实麦克风"
-                SourceType.SILENCE -> "静音"
+                SourceType.REAL_MIC -> AppLocale.string(context, R.string.source_real_mic)
+                SourceType.SILENCE -> AppLocale.string(context, R.string.source_silence)
+                SourceType.TTS -> AppLocale.string(context, R.string.source_tts)
             },
             groupName = group?.let { "${it.emoji} ${it.name}" } ?: "—",
             policyLabel = when (cfg.playbackPolicy) {
-                ProtoPolicy.SILENCE -> "静音"
-                ProtoPolicy.LOOP -> "循环"
-                ProtoPolicy.REAL_MIC -> "切回真实麦克风"
-                else -> "循环"
+                ProtoPolicy.SILENCE -> AppLocale.string(context, R.string.home_policy_silence)
+                ProtoPolicy.LOOP -> AppLocale.string(context, R.string.library_policy_loop)
+                ProtoPolicy.REAL_MIC -> AppLocale.string(context, R.string.library_policy_real_mic)
+                else -> AppLocale.string(context, R.string.library_policy_loop)
             },
             scopeLabel = when (cfg.scopeMode) {
-                ProtoScope.GLOBAL -> "全系统"
-                ProtoScope.WHITELIST -> "白名单（${cfg.whitelistCount}）"
+                ProtoScope.GLOBAL -> AppLocale.string(context, R.string.scope_mode_global)
+                ProtoScope.WHITELIST -> AppLocale.string(context, R.string.home_scope_whitelist_count, cfg.whitelistCount)
                 // BLACKLIST 已在 UI 上隐藏；旧配置统一按"全系统"展示
-                else -> "全系统"
+                else -> AppLocale.string(context, R.string.scope_mode_global)
             },
-            floatingLabel = if (rt.floatingWindowVisible) "开启" else "关闭",
+            floatingWindowVisible = rt.floatingWindowVisible,
             positionMs = rt.positionMs,
             durationMs = rt.durationMs,
             progress = if (rt.durationMs > 0) rt.positionMs.toFloat() / rt.durationMs else 0f,
             hookActivity = hook.activity,
             hookLastPkg = hook.lastPackage,
-            hookLastResolve = hook.lastResolve,
-            hookLastResolveReason = hook.lastResolveReason,
-            hookNativeOk = hook.nativeOk,
-            hookAudiorecordHooked = hook.audiorecordHooked,
             hookLastPingMs = hook.lastPingMs,
             hookApi = hook.api,
             interceptReads = stats.totalReads,
@@ -124,17 +117,11 @@ class HomeViewModel @Inject constructor(
     }.stateIn(viewModelScope, SharingStarted.Eagerly, HomeUiState())
 
     fun togglePause() {
-        val wasPaused = playback.isPaused
         playback.togglePause()
-        val msg = if (wasPaused) {
-            context.getString(R.string.toast_resumed_virtual)
-        } else {
-            context.getString(R.string.toast_paused_real_mic)
-        }
-        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
     }
 
     fun seekTo(positionMs: Long) {
+        runtime.setPosition(positionMs)
         viewModelScope.launch { playback.seekTo(positionMs) }
     }
 
@@ -146,7 +133,6 @@ class HomeViewModel @Inject constructor(
                 configStore.update { it.setGlobalSwitch(true) }
                 GlassForegroundService.start(context)
             } else {
-                playback.setLocalMonitorRuntime(false)
                 configStore.update { it.setGlobalSwitch(false) }
                 bootGate.clear()
                 GlassForegroundService.stop(context)
@@ -158,18 +144,7 @@ class HomeViewModel @Inject constructor(
     fun toggleFloating() {
         if (runtime.value.floatingWindowVisible) {
             FloatingWindowService.stop(context)
-            return
-        }
-        viewModelScope.launch {
-            val cfg = configStore.current()
-            if (!cfg.floatingWindow.enabled) {
-                Toast.makeText(context, "请在设置中开启悬浮窗", Toast.LENGTH_SHORT).show()
-                return@launch
-            }
-            if (!cfg.globalSwitch) {
-                Toast.makeText(context, "请先开启主开关", Toast.LENGTH_SHORT).show()
-                return@launch
-            }
+        } else {
             FloatingWindowService.start(context)
         }
     }

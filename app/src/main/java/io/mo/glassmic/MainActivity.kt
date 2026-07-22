@@ -1,5 +1,6 @@
 package io.mo.glassmic
 
+import android.content.Context
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -16,12 +17,14 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import dagger.hilt.android.AndroidEntryPoint
 import dagger.hilt.android.lifecycle.HiltViewModel
+import io.mo.glassmic.data.config.AppLocale
 import io.mo.glassmic.data.config.ConfigStore
 import io.mo.glassmic.data.runtime.SafeModeRepository
 import io.mo.glassmic.ui.home.HomeScreen
 import io.mo.glassmic.ui.library.LibraryScreen
 import io.mo.glassmic.ui.onboarding.OnboardingFlow
 import io.mo.glassmic.ui.scope.ScopeScreen
+import io.mo.glassmic.ui.settings.AiTtsSettingsScreen
 import io.mo.glassmic.ui.settings.SettingsScreen
 import io.mo.glassmic.ui.settings.SafeModeScreen
 import io.mo.glassmic.ui.theme.YuhuoTheme
@@ -33,6 +36,12 @@ import javax.inject.Inject
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+
+    // MainActivity 不是 AppCompatActivity，Android 13 以下需要在这里手动按已保存的语言包一层
+    // Context，AppCompatDelegate.setApplicationLocales() 才能在冷启动时真正生效。
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(AppLocale.wrap(newBase))
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -82,6 +91,7 @@ object Routes {
     const val LIBRARY = "library"
     const val SCOPE = "scope"
     const val SETTINGS = "settings"
+    const val AI_TTS = "ai_tts"
     const val SAFE_MODE = "safemode"
 }
 
@@ -113,7 +123,13 @@ private fun AppNavHost(nav: NavHostController, gate: GateDecision) {
         }
         composable(Routes.LIBRARY) { LibraryScreen(onBack = { nav.popBackStack() }) }
         composable(Routes.SCOPE) { ScopeScreen(onBack = { nav.popBackStack() }) }
-        composable(Routes.SETTINGS) { SettingsScreen(onBack = { nav.popBackStack() }) }
+        composable(Routes.SETTINGS) {
+            SettingsScreen(
+                onBack = { nav.popBackStack() },
+                onOpenAiTts = { nav.navigate(Routes.AI_TTS) }
+            )
+        }
+        composable(Routes.AI_TTS) { AiTtsSettingsScreen(onBack = { nav.popBackStack() }) }
         composable(Routes.SAFE_MODE) {
             SafeModeScreen(onExitComplete = {
                 nav.navigate(Routes.HOME) {

@@ -7,7 +7,6 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <sys/types.h>
 
 namespace glass {
@@ -16,6 +15,7 @@ namespace glass {
 using AudioRecord_read_t = ssize_t (*)(void* /*this*/, void*, size_t, bool);
 static AudioRecord_read_t g_orig_read = nullptr;
 static void* g_read_stub = nullptr;
+static std::atomic<bool> g_installed{false};
 static std::atomic<bool> g_dumped{false};
 
 static const int32_t kCommonRates[] = {
@@ -43,7 +43,8 @@ static bool is_common_rate(uint32_t v) {
  * 先扫出 mSampleRate 的偏移（值唯一可判别），再按 +4/+8 取 format / channelCount，
  * 并做范围校验。校验失败时回退到安全默认。
  *
- * 仅 FILE 模式需要精确格式；SILENCE 模式按字节清零，与此无关。
+ * FILE 模式需要精确格式；SILENCE 模式填舒适噪声，格式不准时最坏只是幅度换算略偏，
+ * 仍是低电平噪声、不影响"骗过 VAD"的目的。
  */
 static void detect_format(
     const void* thiz,
@@ -77,14 +78,10 @@ static void detect_format(
 }
 
 static ssize_t my_read(void* thiz, void* buffer, size_t size, bool blocking) {
-    if (!buffer || !thiz || size == 0) {
-        return g_orig_read(thiz, buffer, size, blocking);
-    }
+    ssize_t n = g_orig_read(thiz, buffer, size, blocking);
+    if (n <= 0 || !buffer || !thiz) return n;
 
-    const Decision decision = get_decision();
-    if (decision == Decision::REAL_MIC) {
-        return g_orig_read(thiz, buffer, size, blocking);
-    }
+    if (get_decision() == Decision::REAL_MIC) return n;
 
     int32_t sr = 48'000, ch = 0;
     SampleFmt fmt = SampleFmt::S16;
@@ -93,78 +90,45 @@ static ssize_t my_read(void* thiz, void* buffer, size_t size, bool blocking) {
 
     int32_t bps = (fmt == SampleFmt::FLOAT) ? 4 : 2;
     if (ch <= 0) {
-        ch = (size % (bps * 2) == 0) ? 2 : 1;
+        // 未取到声道：按字节数兜底（frameSize 4 整除→stereo，否则 mono）。
+        ch = (n % (bps * 2) == 0) ? 2 : 1;
     }
 
     if (!g_dumped.exchange(true)) {
-        LOGI("AudioRecord::read first hit: size=%zu sr=%d@%d ch=%d fmt=%d decision=%d",
-             size, sr, sr_off, ch, static_cast<int>(fmt), static_cast<int>(decision));
+        LOGI("AudioRecord::read first hit: size=%zu n=%zd sr=%d@%d ch=%d fmt=%d",
+             size, n, sr, sr_off, ch, static_cast<int>(fmt));
     }
 
     int32_t frame_bytes = ch * bps;
-    int32_t frames = static_cast<int32_t>(size) / frame_bytes;
-    if (frames <= 0) {
-        return g_orig_read(thiz, buffer, size, blocking);
+    int32_t frames = static_cast<int32_t>(n) / frame_bytes;
+    if (frames > 0) {
+        fill_pcm(buffer, fmt, ch, sr, frames);
     }
-
-    if (decision == Decision::SILENCE) {
-        std::memset(buffer, 0, size);
-        return static_cast<ssize_t>(size);
-    }
-
-    if (decision == Decision::FILE && is_mix_enabled()) {
-        ssize_t n = g_orig_read(thiz, buffer, size, blocking);
-        if (n <= 0) return n;
-        int32_t mix_frames = static_cast<int32_t>(n) / frame_bytes;
-        if (mix_frames > 0) {
-            mix_virtual_into(buffer, fmt, ch, sr, mix_frames);
-        }
-        return n;
-    }
-
-    // FILE 替麦：不先读真实麦，直接填虚拟轨；未就绪则静音
-    if (fill_pcm(buffer, fmt, ch, sr, frames)) {
-        return static_cast<ssize_t>(size);
-    }
-    std::memset(buffer, 0, size);
-    return static_cast<ssize_t>(size);
+    return n;
 }
 
-static bool hook_read_in_lib(const char* lib_name) {
-    if (g_orig_read != nullptr) return true;
+bool install_audiorecord_hook() {
+    bool expected = false;
+    if (!g_installed.compare_exchange_strong(expected, true)) {
+        return true;
+    }
 
-    void* stub = shadowhook_hook_sym_name(
-        lib_name,
+    g_read_stub = shadowhook_hook_sym_name(
+        "libaudioclient.so",
         "_ZN7android11AudioRecord4readEPvmb",
         reinterpret_cast<void*>(my_read),
         reinterpret_cast<void**>(&g_orig_read)
     );
-    if (!stub) {
+    if (!g_read_stub) {
         int err = shadowhook_get_errno();
         const char* msg = shadowhook_to_errmsg(err);
-        LOGW("hook AudioRecord::read in %s failed: err=%d %s", lib_name, err, msg ? msg : "?");
+        LOGW("hook AudioRecord::read failed: err=%d %s", err, msg ? msg : "?");
+        g_installed.store(false);
         return false;
     }
 
-    g_read_stub = stub;
-    LOGI("AudioRecord::read hook installed via %s", lib_name);
+    LOGI("AudioRecord::read hook installed");
     return true;
-}
-
-bool is_audiorecord_hooked() {
-    return g_orig_read != nullptr;
-}
-
-bool install_audiorecord_hook() {
-    if (g_orig_read != nullptr) return true;
-
-    if (hook_read_in_lib("libaudioclient.so")) {
-        return true;
-    }
-    if (hook_read_in_lib("libmedia.so")) {
-        return true;
-    }
-    return false;
 }
 
 } // namespace glass

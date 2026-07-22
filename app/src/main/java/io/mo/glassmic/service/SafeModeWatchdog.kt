@@ -25,7 +25,7 @@ import javax.inject.Singleton
  * 1. 30 秒内 SystemUI 重启 ≥ 2 次
  * 2. 30 秒内关键系统进程异常 ≥ 2 次
  * 3. 模块初始化连续失败 ≥ 2 次
- * 4. 60 秒内音频引擎异常 ≥ 8 次（切换音源时的瞬时错误不计入连续失败）
+ * 4. 音频引擎连续异常 ≥ 3 次
  * 5. 上次开机未正常退出（在 Application.onCreate 已处理）
  * 6. 用户手动紧急停用
  */
@@ -39,8 +39,7 @@ class SafeModeWatchdog @Inject constructor(
     private val systemUiCounter = SlidingCounter(window30s)
     private val keySysProcCounter = SlidingCounter(window30s)
     private val initFailures = AtomicInteger(0)
-    private val audioEngineFailureCounter = SlidingCounter(60_000L)
-    private var lastSystemUiErrorAt = 0L
+    private val audioEngineFailures = AtomicInteger(0)
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var lastSystemUiPid: Int = -1
@@ -83,16 +82,9 @@ class SafeModeWatchdog @Inject constructor(
     }
 
     fun onAudioEngineFailure() {
-        audioEngineFailureCounter.inc()
-        val count = audioEngineFailureCounter.count()
-        GlassLog.b("Watchdog") { "音频引擎异常 ($count/$AUDIO_FAILURE_THRESHOLD)" }
-        if (count >= AUDIO_FAILURE_THRESHOLD) {
+        if (audioEngineFailures.incrementAndGet() >= 3) {
             trigger(SafeModeReason.AUDIO_ENGINE_CONTINUOUS_FAILURE)
         }
-    }
-
-    fun onAudioEngineRecovered() {
-        audioEngineFailureCounter.reset()
     }
 
     fun emergencyStop() {
@@ -115,18 +107,10 @@ class SafeModeWatchdog @Inject constructor(
         val errs = am.processesInErrorState ?: return -1
         errs.forEach { err ->
             if (err.processName == "com.android.systemui") {
-                val now = System.currentTimeMillis()
-                if (now - lastSystemUiErrorAt < SYSTEM_UI_ERROR_DEBOUNCE_MS) return@forEach
-                lastSystemUiErrorAt = now
                 GlassLog.b("Watchdog") { "SystemUI 处于错误状态: ${err.condition}" }
                 onSystemUiCrash()
             }
         }
         return -1  // 实际 PID 不可达；通过错误状态触发
-    }
-
-    private companion object {
-        const val AUDIO_FAILURE_THRESHOLD = 8
-        const val SYSTEM_UI_ERROR_DEBOUNCE_MS = 15_000L
     }
 }

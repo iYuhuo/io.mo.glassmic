@@ -14,18 +14,14 @@ extern "C" {
 
 JNIEXPORT jint JNICALL
 Java_io_mo_glassmic_xposed_NativeAAudioHook_nativeInstall(JNIEnv* env, jclass) {
+    // AAudio 是主路径——失败才算装载失败。OpenSL ES 作为补充路径，失败不致命
+    // （例如某些机型/进程未用到 OpenSL 录音）。
     bool aaudio_ok = install_aaudio_hook();
     bool opensl_ok = install_opensl_hook();
     bool arecord_ok = install_audiorecord_hook();
     LOGI("native hooks installed: aaudio=%d opensl=%d audiorecord=%d",
          aaudio_ok, opensl_ok, arecord_ok);
-    bool any_ok = aaudio_ok || opensl_ok || arecord_ok;
-    return any_ok ? 0 : -1;
-}
-
-JNIEXPORT jboolean JNICALL
-Java_io_mo_glassmic_xposed_NativeAAudioHook_nativeIsAudiorecordHooked(JNIEnv*, jclass) {
-    return is_audiorecord_hooked() ? JNI_TRUE : JNI_FALSE;
+    return aaudio_ok ? 0 : -1;
 }
 
 JNIEXPORT void JNICALL
@@ -40,12 +36,8 @@ Java_io_mo_glassmic_xposed_NativeAAudioHook_nativeSetDecision(JNIEnv* env, jclas
     set_decision(dec);
 }
 
-JNIEXPORT void JNICALL
-Java_io_mo_glassmic_xposed_NativeAAudioHook_nativeSetMixEnabled(JNIEnv*, jclass, jboolean enabled) {
-    set_mix_enabled(enabled == JNI_TRUE);
-}
-
 /**
+ * Kotlin 侧打开 ContentProvider 的 pipe 后把 fd 通过 ParcelFileDescriptor.detachFd() 取出来再传给我们。
  * native 持有该 fd 的所有权——上一次设置的 fd 会在这里被 close。
  * 传 -1 == 清空。
  */
@@ -75,6 +67,12 @@ Java_io_mo_glassmic_xposed_NativeAAudioHook_nativeDupFd(JNIEnv* env, jclass, job
 /**
  * 返回 long[4] = { reads, bytes, last_sample_rate, last_channels }
  */
+
+JNIEXPORT jboolean JNICALL
+Java_io_mo_glassmic_xposed_NativeAAudioHook_nativeHasPcmFd(JNIEnv*, jclass) {
+    return has_pcm_fd() ? JNI_TRUE : JNI_FALSE;
+}
+
 JNIEXPORT jlongArray JNICALL
 Java_io_mo_glassmic_xposed_NativeAAudioHook_nativeDrainStats(JNIEnv* env, jclass) {
     uint64_t reads = 0, bytes = 0;

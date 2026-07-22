@@ -30,7 +30,7 @@ import javax.inject.Singleton
  * 默认脱敏：不写入用户路径、不写入 App 列表、不写入音频文件。
  * 内容仅限：环境信息、配置摘要、最近日志、安全模式记录、Xposed ping 状态。
  *
- * 产物：filesDir/diagnostics/yuhuo-diag-YYYYMMDD-HHmmss.zip
+ * 产物：filesDir/diagnostics/glassmic-diag-YYYYMMDD-HHmmss.zip
  * 返回值是可分享的 content:// Uri（用 FileProvider，需要 res/xml/file_paths.xml）。
  */
 @Singleton
@@ -45,7 +45,7 @@ class DiagnosticBundler @Inject constructor(
     suspend fun export(): File = withContext(Dispatchers.IO) {
         val dir = File(context.filesDir, "diagnostics").apply { if (!exists()) mkdirs() }
         val ts = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
-        val target = File(dir, "yuhuo-diag-$ts.zip")
+        val target = File(dir, "glassmic-diag-$ts.zip")
 
         ZipOutputStream(FileOutputStream(target)).use { zip ->
             writeEntry(zip, "summary.json", buildSummary())

@@ -56,9 +56,7 @@ object HookBootstrap {
             } else {
                 LegacyAudioRecordHook.install(appCtx, pkg)
             }
-            NativeAAudioHook.install(appCtx, pkg)
-            val nativeOk = runCatching { NativeAAudioHook.isReady() }.getOrDefault(false)
-            val audiorecordHooked = runCatching { NativeAAudioHook.isAudiorecordHooked() }.getOrDefault(false)
+            val nativeOk = NativeAAudioHook.install(appCtx, pkg)
             val latest = runCatching { XBridge.queryResolveExplanation(appCtx, pkg) }
                 .getOrDefault(explained)
             XBridge.pingModuleLoaded(
@@ -66,14 +64,13 @@ object HookBootstrap {
                 pkg,
                 api = if (api != null) 101 else 82,
                 nativeOk = nativeOk,
-                audiorecordHooked = audiorecordHooked,
+                audiorecordHooked = nativeOk,
                 resolvedSource = latest.first,
                 resolveReason = latest.second
             )
             Log.i(
                 TAG,
-                "hooks ready in $pkg resolve=${latest.first} reason=${latest.second} " +
-                    "native=$nativeOk audiorecord=$audiorecordHooked"
+                "hooks ready in $pkg resolve=${latest.first} reason=${latest.second} native=$nativeOk"
             )
         }.onFailure {
             Log.w(TAG, "install hooks in $pkg failed: ${it.message}")

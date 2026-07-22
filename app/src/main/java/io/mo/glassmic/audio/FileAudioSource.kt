@@ -29,7 +29,6 @@ class FileAudioSource(
     private val codec: MediaCodec
     private val mutex = Mutex()
     private val info = MediaCodec.BufferInfo()
-    @Volatile private var released = false
 
     private var inputDone = false
     private var outputDone = false
@@ -67,7 +66,6 @@ class FileAudioSource(
     }
 
     override suspend fun read(out: ByteBuffer, sampleRate: Int, channels: Int): Int = mutex.withLock {
-        if (released) return@withLock 0
         val targetSampleRate = sampleRate.takeIf { it > 0 } ?: 48_000
         val targetChannels = channels.takeIf { it > 0 } ?: 1
         val bytesPerTargetFrame = targetChannels * BYTES_PER_SAMPLE
@@ -264,16 +262,13 @@ class FileAudioSource(
     }
 
     override fun release() {
-        kotlinx.coroutines.runBlocking {
-            mutex.withLock {
-                if (released) return@withLock
-                released = true
-                runCatching { codec.stop() }
-                runCatching { codec.release() }
-                runCatching { extractor.release() }
-            }
-        }
+        runCatching { codec.stop() }
+        runCatching { codec.release() }
+        runCatching { extractor.release() }
     }
+
+    /** 本地监听独立时钟：另开一路解码，进度与注入源互不影响。 */
+    fun fork(): FileAudioSource = FileAudioSource(clip, filePath)
 
     private companion object {
         const val BYTES_PER_SAMPLE = 2
