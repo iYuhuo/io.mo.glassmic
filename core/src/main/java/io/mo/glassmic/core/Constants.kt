@@ -25,6 +25,14 @@ object Constants {
     const val AUDIO_STATS_LAST_CHANNELS = "last_channels"
     const val METHOD_AUDIO_INTERCEPT = "audio_intercept"
 
+    /** 查询当前「强制解除麦克风占用」序号（hook 进程轮询 / ContentObserver 用） */
+    const val METHOD_FORCE_RELEASE_TOKEN = "force_release_token"
+    const val KEY_FORCE_RELEASE_TOKEN = "token"
+    const val KEY_IN_SCOPE = "in_scope"
+    const val KEY_RECORDING_BLOCK_UNTIL = "recording_block_until"
+    /** 点击解除占用后，作用域内 App 禁止重开录音的默认时长 */
+    const val MIC_RELEASE_BLOCK_MS = 5_000L
+
     // ContentProvider authorities
     const val PROVIDER_RUNTIME = "io.mo.glassmic.provider.runtime"
     const val PROVIDER_PCM = "io.mo.glassmic.provider.pcm"

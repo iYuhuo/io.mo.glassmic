@@ -22,6 +22,8 @@ import java.nio.ByteBuffer
 
 import java.nio.ByteOrder
 
+import java.util.Collections
+
 import java.util.WeakHashMap
 
 
@@ -48,6 +50,11 @@ object AudioRecordHook {
 
 
 
+    /** 本进程见过的 AudioRecord（含真麦透传路径），供一键解除占用。 */
+    private val liveRecords = Collections.synchronizedMap(WeakHashMap<AudioRecord, Boolean>())
+
+
+
     @Volatile private var installed = false
 
 
@@ -65,6 +72,8 @@ object AudioRecordHook {
         data object Proceed : HookDecision
 
         data class Replace(val value: Any?) : HookDecision
+
+        data class Fail(val error: Throwable) : HookDecision
 
     }
 
@@ -184,6 +193,18 @@ object AudioRecordHook {
 
 
 
+        hookMethod(
+
+            api, appCtx, callerPkg,
+
+            findMethod(AudioRecord::class.java, "startRecording"),
+
+            ::handleStartRecording
+
+        )
+
+
+
         api.log(Log.INFO, TAG, "installed in $callerPkg")
 
     }
@@ -240,6 +261,8 @@ object AudioRecordHook {
 
                     is HookDecision.Replace -> decision.value
 
+                    is HookDecision.Fail -> throw decision.error
+
                 }
 
             }
@@ -250,9 +273,11 @@ object AudioRecordHook {
 
     private fun handleByteArray(appCtx: Context, pkg: String, chain: XposedInterface.Chain): HookDecision {
 
-        val src = XBridge.resolveSource(appCtx, pkg)
-
         val record = chain.getThisObject() as AudioRecord
+
+        track(record)
+
+        val src = XBridge.resolveSource(appCtx, pkg)
 
         if (src == SourceType.REAL_MIC) {
 
@@ -333,9 +358,11 @@ object AudioRecordHook {
 
     private fun handleShortArray(appCtx: Context, pkg: String, chain: XposedInterface.Chain): HookDecision {
 
-        val src = XBridge.resolveSource(appCtx, pkg)
-
         val record = chain.getThisObject() as AudioRecord
+
+        track(record)
+
+        val src = XBridge.resolveSource(appCtx, pkg)
 
         if (src == SourceType.REAL_MIC) {
 
@@ -414,9 +441,11 @@ object AudioRecordHook {
 
     private fun handleFloatArray(appCtx: Context, pkg: String, chain: XposedInterface.Chain): HookDecision {
 
-        val src = XBridge.resolveSource(appCtx, pkg)
-
         val record = chain.getThisObject() as AudioRecord
+
+        track(record)
+
+        val src = XBridge.resolveSource(appCtx, pkg)
 
         if (src == SourceType.REAL_MIC) {
 
@@ -495,9 +524,11 @@ object AudioRecordHook {
 
     private fun handleByteBuffer(appCtx: Context, pkg: String, chain: XposedInterface.Chain): HookDecision {
 
-        val src = XBridge.resolveSource(appCtx, pkg)
-
         val record = chain.getThisObject() as AudioRecord
+
+        track(record)
+
+        val src = XBridge.resolveSource(appCtx, pkg)
 
         if (src == SourceType.REAL_MIC) {
 
@@ -586,6 +617,8 @@ object AudioRecordHook {
 
         val record = chain.getThisObject() as AudioRecord
 
+        track(record)
+
         releaseReader(record)
 
         return HookDecision.Proceed
@@ -653,6 +686,85 @@ object AudioRecordHook {
         val ms = frames.toLong() * 1000L / sampleRate
 
         if (ms > 0) runCatching { Thread.sleep(ms) }
+
+    }
+
+
+    private fun handleStartRecording(appCtx: Context, pkg: String, chain: XposedInterface.Chain): HookDecision {
+
+        val record = chain.getThisObject() as AudioRecord
+
+        track(record)
+
+        XBridge.resolveSource(appCtx, pkg)
+
+        if (MicForceRelease.shouldBlockRecording()) {
+
+            return HookDecision.Fail(
+
+                IllegalStateException("yuhuo: recording blocked briefly after mic release")
+
+            )
+
+        }
+
+        return HookDecision.Proceed
+
+    }
+
+
+
+    private fun track(record: AudioRecord) {
+
+        liveRecords[record] = java.lang.Boolean.TRUE
+
+    }
+
+
+
+    /** 打断本进程跟踪到的全部 AudioRecord，释放系统麦克风占用。 */
+
+    fun forceReleaseAll() {
+
+        val snapshot = synchronized(liveRecords) { liveRecords.keys.toList() }
+
+        var n = 0
+
+        for (record in snapshot) {
+
+            val err = runCatching {
+
+                if (record.state != AudioRecord.STATE_UNINITIALIZED) {
+
+                    if (record.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
+
+                        record.stop()
+
+                    }
+
+                    record.release()
+
+                }
+
+            }.exceptionOrNull()
+
+            if (err != null) {
+
+                Log.w(TAG, "forceRelease one failed: ${err.message}")
+
+            } else {
+
+                n++
+
+            }
+
+            releaseReader(record)
+
+            liveRecords.remove(record)
+
+        }
+
+        Log.i(TAG, "forceReleaseAll ok=$n / ${snapshot.size}")
 
     }
 

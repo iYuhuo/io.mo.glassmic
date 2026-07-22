@@ -1,4 +1,5 @@
 #include "glass_aaudio.h"
+#include "glass_opensl.h"
 #include "glass_log.h"
 
 #include <aaudio/AAudio.h>
@@ -9,6 +10,8 @@
 #include <cstdint>
 #include <cstring>
 #include <mutex>
+#include <unordered_set>
+#include <vector>
 #include <unistd.h>
 
 namespace glass {
@@ -24,6 +27,9 @@ struct PcmFdState {
 
 static std::mutex g_fd_mutex;
 static PcmFdState g_fd_state;
+
+static std::mutex g_streams_mutex;
+static std::unordered_set<AAudioStream*> g_input_streams;
 
 static std::atomic<uint64_t> g_pending_reads{0};
 static std::atomic<uint64_t> g_pending_bytes{0};
@@ -327,6 +333,11 @@ static aaudio_result_t my_AAudioStream_read(
         return g_orig_AAudioStream_read(stream, buffer, numFrames, timeoutNanos);
     }
 
+    {
+        std::lock_guard<std::mutex> lock(g_streams_mutex);
+        g_input_streams.insert(stream);
+    }
+
     if (fill_input_buffer(stream, buffer, numFrames) == FillResult::FILLED) {
         return numFrames;
     }
@@ -356,6 +367,10 @@ static aaudio_data_callback_result_t my_data_callback(
     // 仅对输入流改写；输出流（播放）原样转交。
     if (stream && audioData && numFrames > 0 &&
         AAudioStream_getDirection(stream) == AAUDIO_DIRECTION_INPUT) {
+        {
+            std::lock_guard<std::mutex> lock(g_streams_mutex);
+            g_input_streams.insert(stream);
+        }
         fill_input_buffer(stream, audioData, numFrames);
     }
 
@@ -462,6 +477,24 @@ void drain_stats(
     if (out_bytes) *out_bytes = g_pending_bytes.exchange(0, std::memory_order_relaxed);
     if (out_last_sr) *out_last_sr = g_last_sr.load(std::memory_order_relaxed);
     if (out_last_ch) *out_last_ch = g_last_ch.load(std::memory_order_relaxed);
+}
+
+void force_release_audio_inputs() {
+    std::vector<AAudioStream*> snapshot;
+    {
+        std::lock_guard<std::mutex> lock(g_streams_mutex);
+        snapshot.assign(g_input_streams.begin(), g_input_streams.end());
+        g_input_streams.clear();
+    }
+    for (AAudioStream* stream : snapshot) {
+        if (!stream) continue;
+        // 只 requestStop：流所有权在 App，close 容易 double-free。
+        aaudio_result_t rc = AAudioStream_requestStop(stream);
+        LOGI("AAudio force requestStop stream=%p rc=%d", stream, static_cast<int>(rc));
+    }
+    set_pcm_fd(-1, 0, 0);
+    force_stop_opensl_recorders();
+    LOGI("force_release_audio_inputs aaudio=%zu", snapshot.size());
 }
 
 } // namespace glass

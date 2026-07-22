@@ -17,7 +17,17 @@ data class RuntimeState(
     val realMicPassThrough: Boolean = false,
     val playbackPolicy: PlaybackPolicy = PlaybackPolicy.LOOP,
     val floatingWindowVisible: Boolean = false,
-    val lastError: String? = null
+    val lastError: String? = null,
+    /**
+     * 每次用户点「解除麦克风占用」递增。Xposed 侧在 resolve 里读到更大值时，
+     * 对本进程已跟踪的 AudioRecord / AAudio / OpenSL 录音会话执行 stop/release。
+     */
+    val forceReleaseToken: Long = 0L,
+    /**
+     * 墙钟时间：在此之前，作用域内 App 的 startRecording / MediaRecorder.start 会被拒绝，
+     * 并持续 stop/release，防止掐断后立刻重连占麦。
+     */
+    val recordingBlockUntilMs: Long = 0L,
 )
 
 /**

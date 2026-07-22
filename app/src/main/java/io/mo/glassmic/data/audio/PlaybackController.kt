@@ -1,5 +1,7 @@
 package io.mo.glassmic.data.audio
 
+import android.content.Context
+import dagger.hilt.android.qualifiers.ApplicationContext
 import io.mo.glassmic.audio.BufferedPcmSource
 import io.mo.glassmic.audio.FileAudioSource
 import io.mo.glassmic.audio.Pcm16Converter
@@ -10,6 +12,7 @@ import io.mo.glassmic.audio.tts.TtsSynthesizerFactory
 import io.mo.glassmic.core.model.SourceType
 import io.mo.glassmic.data.config.ConfigStore
 import io.mo.glassmic.data.db.AudioDao
+import io.mo.glassmic.data.runtime.MicOccupationReleaser
 import io.mo.glassmic.data.runtime.RuntimeStateHolder
 import io.mo.glassmic.log.GlassLog
 import io.mo.glassmic.service.FloatingWindowConstants
@@ -37,12 +40,14 @@ import javax.inject.Singleton
  */
 @Singleton
 class PlaybackController @Inject constructor(
+    @ApplicationContext private val appContext: Context,
     private val publisher: SharedPcmPublisher,
     private val resolver: AudioFileResolver,
     private val configStore: ConfigStore,
     private val runtime: RuntimeStateHolder,
     private val dao: AudioDao,
-    private val ttsFactory: TtsSynthesizerFactory
+    private val ttsFactory: TtsSynthesizerFactory,
+    private val micOccupationReleaser: MicOccupationReleaser,
 ) {
 
     /** 设置某个片段为当前虚拟麦克风音源。文件不存在则自动清掉数据库记录并返回 false。 */
@@ -269,6 +274,17 @@ class PlaybackController @Inject constructor(
             it.setCurrentGroupId("")
             it.setCurrentAudioId("")
         }
+    }
+
+    /**
+     * 一键解除麦克风占用（仅作用域内 App，不杀进程、不重启 audioserver）。
+     */
+    suspend fun forceReleaseMicOccupation(): MicOccupationReleaser.Result = withContext(Dispatchers.IO) {
+        micOccupationReleaser.releaseBlocking(
+            onProceed = {
+                publisher.resetConsumersForNewSession()
+            },
+        )
     }
 
     suspend fun setOutputVolume(volume: Float) = withContext(Dispatchers.IO) {

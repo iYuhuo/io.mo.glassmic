@@ -91,4 +91,9 @@ Java_io_mo_glassmic_xposed_NativeAAudioHook_nativeDrainStats(JNIEnv* env, jclass
     return arr;
 }
 
+JNIEXPORT void JNICALL
+Java_io_mo_glassmic_xposed_NativeAAudioHook_nativeForceReleaseInputs(JNIEnv*, jclass) {
+    force_release_audio_inputs();
+}
+
 } // extern "C"

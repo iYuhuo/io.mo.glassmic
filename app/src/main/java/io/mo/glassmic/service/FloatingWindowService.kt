@@ -239,6 +239,18 @@ class FloatingWindowService : LifecycleService() {
                     onOutputVolumeChangeFinished = { vol ->
                         lifecycleScope.launch { playback.setOutputVolume(vol) }
                     },
+                    onReleaseMicOccupation = releaseMic@{
+                        // 冷却期内重复点击直接忽略，避免叠多个 kill audioserver
+                        if (releaseMicJob?.isActive == true) return@releaseMic
+                        releaseMicJob = lifecycleScope.launch {
+                            val result = playback.forceReleaseMicOccupation()
+                            android.widget.Toast.makeText(
+                                this@FloatingWindowService,
+                                result.message,
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    },
                     onDragBy = { dx, dy -> onDragBy(dx, dy) },
                     onDragEnd = { onDragEnd() },
                 )
@@ -297,6 +309,7 @@ class FloatingWindowService : LifecycleService() {
     }
 
     private var ttsGenerateJob: Job? = null
+    private var releaseMicJob: Job? = null
     /** 延时播放期间持有倒计时协程，供再次点击时取消。 */
     private var ttsPlayJob: Job? = null
 

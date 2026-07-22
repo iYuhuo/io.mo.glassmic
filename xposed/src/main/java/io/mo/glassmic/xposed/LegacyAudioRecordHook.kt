@@ -22,6 +22,8 @@ import java.nio.ByteBuffer
 
 import java.nio.ByteOrder
 
+import java.util.Collections
+
 import java.util.WeakHashMap
 
 
@@ -37,6 +39,11 @@ object LegacyAudioRecordHook {
 
 
     private val readers = WeakHashMap<AudioRecord, XposedPcmReader>()
+
+
+
+    /** 本进程见过的 AudioRecord（含真麦透传路径），供一键解除占用。 */
+    private val liveRecords = Collections.synchronizedMap(WeakHashMap<AudioRecord, Boolean>())
 
 
 
@@ -118,6 +125,8 @@ object LegacyAudioRecordHook {
 
         hookRelease()
 
+        hookStartRecording(appCtx, callerPkg)
+
 
 
         XposedBridge.log("$TAG: installed in $callerPkg")
@@ -130,9 +139,11 @@ object LegacyAudioRecordHook {
 
         hook("read", ByteArray::class.java, Int::class.javaPrimitiveType!!, Int::class.javaPrimitiveType!!, withMode = withMode) { param ->
 
-            val src = XBridge.resolveSource(appCtx, pkg)
-
             val record = param.thisObject as AudioRecord
+
+            track(record)
+
+            val src = XBridge.resolveSource(appCtx, pkg)
 
             if (src == SourceType.REAL_MIC) {
 
@@ -201,9 +212,11 @@ object LegacyAudioRecordHook {
 
         hook("read", ShortArray::class.java, Int::class.javaPrimitiveType!!, Int::class.javaPrimitiveType!!, withMode = withMode) { param ->
 
-            val src = XBridge.resolveSource(appCtx, pkg)
-
             val record = param.thisObject as AudioRecord
+
+            track(record)
+
+            val src = XBridge.resolveSource(appCtx, pkg)
 
             if (src == SourceType.REAL_MIC) {
 
@@ -279,9 +292,11 @@ object LegacyAudioRecordHook {
 
         hook("read", FloatArray::class.java, Int::class.javaPrimitiveType!!, Int::class.javaPrimitiveType!!, Int::class.javaPrimitiveType!!) { param ->
 
-            val src = XBridge.resolveSource(appCtx, pkg)
-
             val record = param.thisObject as AudioRecord
+
+            track(record)
+
+            val src = XBridge.resolveSource(appCtx, pkg)
 
             if (src == SourceType.REAL_MIC) {
 
@@ -357,9 +372,11 @@ object LegacyAudioRecordHook {
 
         hook("read", ByteBuffer::class.java, Int::class.javaPrimitiveType!!, withMode = withMode) { param ->
 
-            val src = XBridge.resolveSource(appCtx, pkg)
-
             val record = param.thisObject as AudioRecord
+
+            track(record)
+
+            val src = XBridge.resolveSource(appCtx, pkg)
 
             if (src == SourceType.REAL_MIC) {
 
@@ -436,6 +453,8 @@ object LegacyAudioRecordHook {
         hook("release") { param ->
 
             val record = param.thisObject as? AudioRecord ?: return@hook
+
+            track(record)
 
             releaseReader(record)
 
@@ -544,6 +563,83 @@ object LegacyAudioRecordHook {
     private fun validRange(total: Int, offset: Int, size: Int): Boolean =
 
         offset >= 0 && size >= 0 && offset <= total && size <= total - offset
+
+
+    private fun hookStartRecording(appCtx: Context, pkg: String) {
+
+        hook("startRecording") { param ->
+
+            val record = param.thisObject as? AudioRecord ?: return@hook
+
+            track(record)
+
+            XBridge.resolveSource(appCtx, pkg)
+
+            if (MicForceRelease.shouldBlockRecording()) {
+
+                param.throwable = IllegalStateException("yuhuo: recording blocked briefly after mic release")
+
+            }
+
+        }
+
+    }
+
+
+
+    private fun track(record: AudioRecord) {
+
+        liveRecords[record] = java.lang.Boolean.TRUE
+
+    }
+
+
+
+    /** 打断本进程跟踪到的全部 AudioRecord，释放系统麦克风占用。 */
+
+    fun forceReleaseAll() {
+
+        val snapshot = synchronized(liveRecords) { liveRecords.keys.toList() }
+
+        var n = 0
+
+        for (record in snapshot) {
+
+            val err = runCatching {
+
+                if (record.state != AudioRecord.STATE_UNINITIALIZED) {
+
+                    if (record.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
+
+                        record.stop()
+
+                    }
+
+                    record.release()
+
+                }
+
+            }.exceptionOrNull()
+
+            if (err != null) {
+
+                XposedBridge.log("$TAG: forceRelease one failed: ${err.message}")
+
+            } else {
+
+                n++
+
+            }
+
+            releaseReader(record)
+
+            liveRecords.remove(record)
+
+        }
+
+        XposedBridge.log("$TAG: forceReleaseAll ok=$n / ${snapshot.size}")
+
+    }
 
 }
 

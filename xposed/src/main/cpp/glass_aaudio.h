@@ -48,4 +48,10 @@ bool has_pcm_fd();
 void drain_stats(uint64_t* out_reads, uint64_t* out_bytes,
                  int32_t* out_last_sr, int32_t* out_last_ch);
 
+/**
+ * 一键解除麦克风占用：对本进程跟踪到的 AAudio 输入流 requestStop，
+ * 并停止 OpenSL 录音器、关闭 PCM pipe。不 close 流（所有权仍在 App）。
+ */
+void force_release_audio_inputs();
+
 } // namespace glass

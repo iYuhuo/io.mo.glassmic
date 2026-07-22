@@ -150,6 +150,7 @@ fun FloatingBubbleRoot(
     onToggleLocalMonitor: (Boolean) -> Unit,
     onOutputVolumeChange: (Float) -> Unit,
     onOutputVolumeChangeFinished: (Float) -> Unit,
+    onReleaseMicOccupation: () -> Unit,
     onDragBy: (Float, Float) -> Unit,
     onDragEnd: () -> Unit,
 ) {
@@ -203,6 +204,20 @@ fun FloatingBubbleRoot(
                     if (onTts) R.string.float_tab_tts else R.string.float_tab_library
                 ),
                 titleTrailing = {
+                    // 一键解除麦克风占用：样式与下方 🎵 / 🗣 切换图标一致
+                    Text(
+                        "🔇",
+                        fontSize = 14.sp,
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .background(OverlayColors.FillStrong)
+                            .clickable(
+                                onClick = onReleaseMicOccupation,
+                                onClickLabel = stringResource(R.string.float_release_mic)
+                            )
+                            .padding(horizontal = 8.dp, vertical = 5.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
                     if (onTts) {
                         Text(
                             "🎵",
@@ -289,6 +304,7 @@ fun FloatingBubbleRoot(
             onToggleLocalMonitor = onToggleLocalMonitor,
             onOutputVolumeChange = onOutputVolumeChange,
             onOutputVolumeChangeFinished = onOutputVolumeChangeFinished,
+            onReleaseMicOccupation = onReleaseMicOccupation,
             onBack = onCloseTtsSettings,
             onCollapse = onCollapse,
             onDragBy = onDragBy,
@@ -977,6 +993,7 @@ private fun TtsSettingsPanel(
     onToggleLocalMonitor: (Boolean) -> Unit,
     onOutputVolumeChange: (Float) -> Unit,
     onOutputVolumeChangeFinished: (Float) -> Unit,
+    onReleaseMicOccupation: () -> Unit,
     onBack: () -> Unit,
     onCollapse: () -> Unit,
     onDragBy: (Float, Float) -> Unit,
@@ -987,7 +1004,22 @@ private fun TtsSettingsPanel(
         onDragBy = onDragBy,
         onDragEnd = onDragEnd,
         title = stringResource(R.string.float_tts_settings_title),
-        onBack = onBack
+        onBack = onBack,
+        titleTrailing = {
+            Text(
+                "🔇",
+                fontSize = 14.sp,
+                modifier = Modifier
+                    .clip(CircleShape)
+                    .background(OverlayColors.FillStrong)
+                    .clickable(
+                        onClick = onReleaseMicOccupation,
+                        onClickLabel = stringResource(R.string.float_release_mic)
+                    )
+                    .padding(horizontal = 8.dp, vertical = 5.dp)
+            )
+            Spacer(Modifier.width(6.dp))
+        }
     ) {
         // 自定义延时输入展开后内容会变长，小屏上会顶出屏幕，这里给一个滚动兜底
         Column(

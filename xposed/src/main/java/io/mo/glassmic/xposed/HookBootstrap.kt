@@ -56,7 +56,10 @@ object HookBootstrap {
             } else {
                 LegacyAudioRecordHook.install(appCtx, pkg)
             }
+            runCatching { MediaRecorderHook.install(api, pkg) }
+                .onFailure { Log.w(TAG, "MediaRecorderHook failed: ${it.message}") }
             val nativeOk = NativeAAudioHook.install(appCtx, pkg)
+            MicForceRelease.startWatching(appCtx, pkg)
             val latest = runCatching { XBridge.queryResolveExplanation(appCtx, pkg) }
                 .getOrDefault(explained)
             XBridge.pingModuleLoaded(

@@ -11,9 +11,6 @@ import java.util.concurrent.atomic.AtomicLong
 
 /**
  * 注入到目标 App 进程后，只通过 yuhuo 自己的 ContentProvider 读取实时决策。
- *
- * API 101 不再依赖旧版 XSharedPreferences；黑白名单、首次启动、BootGate、运行态等
- * 统一由 app 进程里的 EffectiveSourceResolver 计算，Xposed 侧只缓存短时间结果。
  */
 object XBridge {
 
@@ -56,17 +53,12 @@ object XBridge {
         }
     }
 
-    // ============== 拦截统计累计 + 节流上报 ==============
     private const val REPORT_EVERY_READS = 50
     private const val REPORT_EVERY_MS = 1500L
     private val pendingReads = AtomicInteger(0)
     private val pendingBytes = AtomicLong(0L)
     @Volatile private var lastReportMs: Long = 0L
 
-    /**
-     * 任意一个 hook 拦截成功时调用——累计到内存计数器，
-     * 达到阈值或超过节流时间后批量写到 RuntimeProvider。
-     */
     fun recordInterception(ctx: Context, pkg: String, bytes: Int, sampleRate: Int, channels: Int) {
         if (bytes <= 0) return
         pendingReads.incrementAndGet()
@@ -80,10 +72,6 @@ object XBridge {
         }
     }
 
-    /**
-     * 直接批量上报——给 native AAudio hook 用：它已经在 native 侧聚合好了 deltaReads/deltaBytes，
-     * 这里跳过 Java 端的节流，直接写到 ContentProvider。
-     */
     fun reportInterceptBatch(
         ctx: Context,
         callerPackage: String,
@@ -138,21 +126,57 @@ object XBridge {
             return
         }
         val result = queryProvider(ctx.contentResolver, callerPackage)
-        cachedSource = result.first
-        cachedResolveReason = result.second
+        cachedSource = result.source
+        cachedResolveReason = result.reason
         cachedAt = now
         cachedPkg = callerPackage
+        MicForceRelease.applyRemoteState(
+            token = result.forceReleaseToken,
+            scoped = result.inScope,
+            blockUntil = result.blockUntilMs,
+            reason = "resolve",
+        )
     }
 
-    private fun queryProvider(cr: ContentResolver, pkg: String): Pair<SourceType, String> {
+    private data class ResolveRow(
+        val source: SourceType,
+        val reason: String,
+        val forceReleaseToken: Long,
+        val inScope: Boolean,
+        val blockUntilMs: Long,
+    )
+
+    private fun queryProvider(cr: ContentResolver, pkg: String): ResolveRow {
         val uri = Uri.parse("content://${Constants.PROVIDER_RUNTIME}/resolve")
         return runCatching {
             cr.query(uri, null, null, arrayOf(pkg), null)?.use { c ->
-                if (!c.moveToFirst()) return@use SourceType.REAL_MIC to "query_empty"
+                if (!c.moveToFirst()) {
+                    return@use ResolveRow(SourceType.REAL_MIC, "query_empty", 0L, false, 0L)
+                }
                 val src = SourceType.valueOf(c.getString(0))
                 val reason = if (c.columnCount > 5) c.getString(5) ?: "unknown" else "unknown"
-                src to reason
-            } ?: (SourceType.REAL_MIC to "query_null")
-        }.getOrDefault(SourceType.REAL_MIC to "query_error")
+                fun longAt(i: Int): Long = when {
+                    c.columnCount <= i -> 0L
+                    c.getType(i) == android.database.Cursor.FIELD_TYPE_INTEGER -> c.getLong(i)
+                    c.getType(i) == android.database.Cursor.FIELD_TYPE_STRING ->
+                        c.getString(i)?.toLongOrNull() ?: 0L
+                    else -> c.getString(i)?.toLongOrNull() ?: 0L
+                }
+                fun intAt(i: Int): Int = when {
+                    c.columnCount <= i -> 0
+                    c.getType(i) == android.database.Cursor.FIELD_TYPE_INTEGER -> c.getInt(i)
+                    c.getType(i) == android.database.Cursor.FIELD_TYPE_STRING ->
+                        c.getString(i)?.toIntOrNull() ?: 0
+                    else -> 0
+                }
+                ResolveRow(
+                    source = src,
+                    reason = reason,
+                    forceReleaseToken = longAt(6),
+                    inScope = intAt(7) != 0,
+                    blockUntilMs = longAt(8),
+                )
+            } ?: ResolveRow(SourceType.REAL_MIC, "query_null", 0L, false, 0L)
+        }.getOrDefault(ResolveRow(SourceType.REAL_MIC, "query_error", 0L, false, 0L))
     }
 }

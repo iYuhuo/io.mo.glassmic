@@ -76,6 +76,25 @@ class RuntimeStateHolder @Inject constructor() {
 
     fun setError(msg: String?) = _flow.update { it.copy(lastError = msg) }
 
+    /**
+     * 通知作用域内进程：立刻打断录音，并在 [blockDurationMs] 内禁止重开录音。
+     * @return 新的 forceReleaseToken
+     */
+    fun armMicRelease(blockDurationMs: Long = 5_000L): Long {
+        var next = 0L
+        val until = System.currentTimeMillis() + blockDurationMs.coerceIn(1_000L, 60_000L)
+        _flow.update {
+            next = it.forceReleaseToken + 1L
+            it.copy(
+                forceReleaseToken = next,
+                recordingBlockUntilMs = until,
+            )
+        }
+        return next
+    }
+
+    fun recordingBlockUntilMs(): Long = value.recordingBlockUntilMs
+
     fun reset() {
         _flow.value = RuntimeState()
     }

@@ -19,11 +19,9 @@ import io.mo.glassmic.data.runtime.EffectiveSourceResolver
  *
  * URI: content://io.mo.glassmic.provider.runtime/resolve
  * selectionArgs[0] = 调用方包名
- * 返回单行游标 (sourceType, groupId, audioId, globalSwitch)
  *
- * Hilt 限制：不能直接 @AndroidEntryPoint。
- * 用 EntryPointAccessors 在 query 时按需解析依赖——这样无论 Provider.onCreate 是否
- * 在 Application.onCreate 之前都不会 NPE。
+ * 列：source, group_id, audio_id, global_switch, real_mic_mix, resolve_reason,
+ *     force_release_token, in_scope, recording_block_until
  */
 class RuntimeProvider : ContentProvider() {
 
@@ -43,8 +41,21 @@ class RuntimeProvider : ContentProvider() {
         val resolver = entryPoint().resolver()
         val explained = resolver.explain(pkg)
         val snap = resolver.configSnapshot()
+        val releaseToken = resolver.forceReleaseToken()
+        val inScope = resolver.isInModuleScope(pkg)
+        val blockUntil = resolver.recordingBlockUntilMs()
         return MatrixCursor(
-            arrayOf("source", "group_id", "audio_id", "global_switch", "real_mic_mix", "resolve_reason")
+            arrayOf(
+                "source",
+                "group_id",
+                "audio_id",
+                "global_switch",
+                "real_mic_mix",
+                "resolve_reason",
+                "force_release_token",
+                "in_scope",
+                "recording_block_until",
+            )
         ).apply {
             addRow(
                 arrayOf(
@@ -52,8 +63,11 @@ class RuntimeProvider : ContentProvider() {
                     "",
                     "",
                     if (snap.globalSwitch) 1 else 0,
-                    0, // 麦声闪避已移除；保留列以兼容旧 Xposed 缓存解析
-                    explained.reason
+                    0,
+                    explained.reason,
+                    releaseToken.toString(),
+                    if (inScope) 1 else 0,
+                    blockUntil.toString(),
                 )
             )
         }
@@ -94,6 +108,15 @@ class RuntimeProvider : ContentProvider() {
                     ?.apply()
                 return Bundle().apply { putBoolean("ok", true) }
             }
+            Constants.METHOD_FORCE_RELEASE_TOKEN -> {
+                val pkg = arg ?: extras?.getString("package") ?: callingPackage ?: ""
+                val resolver = entryPoint().resolver()
+                return Bundle().apply {
+                    putLong(Constants.KEY_FORCE_RELEASE_TOKEN, resolver.forceReleaseToken())
+                    putBoolean(Constants.KEY_IN_SCOPE, resolver.isInModuleScope(pkg))
+                    putLong(Constants.KEY_RECORDING_BLOCK_UNTIL, resolver.recordingBlockUntilMs())
+                }
+            }
         }
         return super.call(method, arg, extras)
     }
@@ -107,4 +130,11 @@ class RuntimeProvider : ContentProvider() {
     override fun insert(uri: Uri, values: ContentValues?): Uri? = null
     override fun delete(uri: Uri, selection: String?, selectionArgs: Array<out String>?): Int = 0
     override fun update(uri: Uri, values: ContentValues?, selection: String?, selectionArgs: Array<out String>?): Int = 0
+
+    companion object {
+        fun notifyForceReleaseChanged(ctx: Context) {
+            val uri = Uri.parse("content://${Constants.PROVIDER_RUNTIME}/resolve")
+            runCatching { ctx.contentResolver.notifyChange(uri, null) }
+        }
+    }
 }
