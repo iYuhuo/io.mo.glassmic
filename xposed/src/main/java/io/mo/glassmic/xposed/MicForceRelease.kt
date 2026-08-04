@@ -12,10 +12,11 @@ import io.mo.glassmic.core.Constants
 import kotlin.concurrent.thread
 
 /**
- * 作用域内 App：打断已跟踪录音会话，并在封锁窗内禁止重开录音。
+ * 作用域内 App：打断已跟踪录音会话，并在禁录态下禁止重开录音。
  *
  * - 非作用域进程：忽略 token / block（不碰系统其它 App）
  * - 释放必须异步，避免在 read() 钩子栈内同步 release
+ * - 禁录可为持续态（`blockUntil` 取 [Constants.MIC_RELEASE_BLOCK_INDEFINITE_UNTIL]），直到宿主清零
  */
 object MicForceRelease {
 

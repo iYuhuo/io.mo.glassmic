@@ -30,8 +30,11 @@ object Constants {
     const val KEY_FORCE_RELEASE_TOKEN = "token"
     const val KEY_IN_SCOPE = "in_scope"
     const val KEY_RECORDING_BLOCK_UNTIL = "recording_block_until"
-    /** 点击解除占用后，作用域内 App 禁止重开录音的默认时长 */
-    const val MIC_RELEASE_BLOCK_MS = 5_000L
+    /**
+     * 持续禁录哨兵值：`recordingBlockUntilMs` 取此值表示直到用户再次点击才解除。
+     * Hook 侧用 `now < blockUntil` 判断，墙钟永远到不了 [Long.MAX_VALUE]。
+     */
+    const val MIC_RELEASE_BLOCK_INDEFINITE_UNTIL = Long.MAX_VALUE
 
     // ContentProvider authorities
     const val PROVIDER_RUNTIME = "io.mo.glassmic.provider.runtime"

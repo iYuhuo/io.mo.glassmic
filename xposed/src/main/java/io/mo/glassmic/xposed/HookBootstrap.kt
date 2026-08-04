@@ -32,6 +32,10 @@ object HookBootstrap {
         thread(name = "Yuhuo-Bootstrap-$pkg", isDaemon = true, priority = Thread.MIN_PRIORITY) {
             try {
                 XBridge.currentPackage = pkg
+                XBridge.apiVersion = if (api != null) 101 else 82
+                // 注意：这里**不再**主动 pingModuleLoaded / 发起为了诊断的 ContentResolver 调用。
+                // 之前每个 App 启动都 ping 一次 RuntimeProvider，是「被杀又秒复活」的主要来源之一。
+                // 「模块已激活」的诊断状态改由 RuntimeProvider.query 在真正被查询时更新。
                 installHooksOnce(appCtx, pkg, api)
             } catch (t: Throwable) {
                 Log.w(TAG, "bootstrap failed for $pkg: ${t.message}")
@@ -62,15 +66,6 @@ object HookBootstrap {
             MicForceRelease.startWatching(appCtx, pkg)
             val latest = runCatching { XBridge.queryResolveExplanation(appCtx, pkg) }
                 .getOrDefault(explained)
-            XBridge.pingModuleLoaded(
-                appCtx,
-                pkg,
-                api = if (api != null) 101 else 82,
-                nativeOk = nativeOk,
-                audiorecordHooked = nativeOk,
-                resolvedSource = latest.first,
-                resolveReason = latest.second
-            )
             Log.i(
                 TAG,
                 "hooks ready in $pkg resolve=${latest.first} reason=${latest.second} native=$nativeOk"

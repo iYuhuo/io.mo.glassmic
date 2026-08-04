@@ -15,13 +15,21 @@ import java.util.concurrent.atomic.AtomicLong
 object XBridge {
 
     private const val CACHE_TTL_MS = 0L
+    // Provider 被禁用/不可达（= 前台服务未运行）时的回退缓存时长。
+    // 拉长它，避免服务关闭期间某个 App 仍在录音时，每帧都对已禁用的 Provider 空查询一次。
+    private const val UNREACHABLE_TTL_MS = 2000L
 
     private var cachedSource: SourceType? = null
     private var cachedResolveReason: String = "unknown"
     private var cachedAt: Long = 0L
     private var cachedPkg: String = ""
+    // 上次查询 Provider 是否可达（false = 服务未运行 / Provider 被禁用）
+    @Volatile private var lastReachable: Boolean = true
 
     @Volatile var currentPackage: String = ""
+
+    /** 注入入口设置：101 = libxposed API 101，82 = legacy。仅用于诊断状态展示。 */
+    @Volatile var apiVersion: Int = 101
 
     fun pingModuleLoaded(
         ctx: Context,
@@ -122,7 +130,8 @@ object XBridge {
 
     private fun refreshCache(ctx: Context, callerPackage: String) {
         val now = System.currentTimeMillis()
-        if (cachedPkg == callerPackage && cachedSource != null && now - cachedAt < CACHE_TTL_MS) {
+        val ttl = if (lastReachable) CACHE_TTL_MS else UNREACHABLE_TTL_MS
+        if (cachedPkg == callerPackage && cachedSource != null && now - cachedAt < ttl) {
             return
         }
         val result = queryProvider(ctx.contentResolver, callerPackage)
@@ -148,25 +157,34 @@ object XBridge {
 
     private fun queryProvider(cr: ContentResolver, pkg: String): ResolveRow {
         val uri = Uri.parse("content://${Constants.PROVIDER_RUNTIME}/resolve")
+        // selectionArgs[1] 带上 api 版本，供 RuntimeProvider 顺手更新「模块已激活」诊断状态，
+        // 免去在注入进程 attach 阶段单独 ping（那是复活的主要来源）。
         return runCatching {
-            cr.query(uri, null, null, arrayOf(pkg), null)?.use { c ->
-                if (!c.moveToFirst()) {
+            val c = cr.query(uri, null, null, arrayOf(pkg, apiVersion.toString()), null)
+            if (c == null) {
+                // Provider 被禁用（服务未运行）→ AMS 不解析、不拉起本进程，直接走真麦
+                lastReachable = false
+                return ResolveRow(SourceType.REAL_MIC, "provider_unreachable", 0L, false, 0L)
+            }
+            c.use {
+                lastReachable = true
+                if (!it.moveToFirst()) {
                     return@use ResolveRow(SourceType.REAL_MIC, "query_empty", 0L, false, 0L)
                 }
-                val src = SourceType.valueOf(c.getString(0))
-                val reason = if (c.columnCount > 5) c.getString(5) ?: "unknown" else "unknown"
+                val src = SourceType.valueOf(it.getString(0))
+                val reason = if (it.columnCount > 5) it.getString(5) ?: "unknown" else "unknown"
                 fun longAt(i: Int): Long = when {
-                    c.columnCount <= i -> 0L
-                    c.getType(i) == android.database.Cursor.FIELD_TYPE_INTEGER -> c.getLong(i)
-                    c.getType(i) == android.database.Cursor.FIELD_TYPE_STRING ->
-                        c.getString(i)?.toLongOrNull() ?: 0L
-                    else -> c.getString(i)?.toLongOrNull() ?: 0L
+                    it.columnCount <= i -> 0L
+                    it.getType(i) == android.database.Cursor.FIELD_TYPE_INTEGER -> it.getLong(i)
+                    it.getType(i) == android.database.Cursor.FIELD_TYPE_STRING ->
+                        it.getString(i)?.toLongOrNull() ?: 0L
+                    else -> it.getString(i)?.toLongOrNull() ?: 0L
                 }
                 fun intAt(i: Int): Int = when {
-                    c.columnCount <= i -> 0
-                    c.getType(i) == android.database.Cursor.FIELD_TYPE_INTEGER -> c.getInt(i)
-                    c.getType(i) == android.database.Cursor.FIELD_TYPE_STRING ->
-                        c.getString(i)?.toIntOrNull() ?: 0
+                    it.columnCount <= i -> 0
+                    it.getType(i) == android.database.Cursor.FIELD_TYPE_INTEGER -> it.getInt(i)
+                    it.getType(i) == android.database.Cursor.FIELD_TYPE_STRING ->
+                        it.getString(i)?.toIntOrNull() ?: 0
                     else -> 0
                 }
                 ResolveRow(
@@ -176,7 +194,10 @@ object XBridge {
                     inScope = intAt(7) != 0,
                     blockUntilMs = longAt(8),
                 )
-            } ?: ResolveRow(SourceType.REAL_MIC, "query_null", 0L, false, 0L)
-        }.getOrDefault(ResolveRow(SourceType.REAL_MIC, "query_error", 0L, false, 0L))
+            }
+        }.getOrElse {
+            lastReachable = false
+            ResolveRow(SourceType.REAL_MIC, "query_error", 0L, false, 0L)
+        }
     }
 }

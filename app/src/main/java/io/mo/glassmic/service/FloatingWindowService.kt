@@ -239,8 +239,10 @@ class FloatingWindowService : LifecycleService() {
                     onOutputVolumeChangeFinished = { vol ->
                         lifecycleScope.launch { playback.setOutputVolume(vol) }
                     },
+                    recordingBlocked = rt.recordingBlockUntilMs > 0L &&
+                        System.currentTimeMillis() < rt.recordingBlockUntilMs,
                     onReleaseMicOccupation = releaseMic@{
-                        // 冷却期内重复点击直接忽略，避免叠多个 kill audioserver
+                        // 冷却期内重复点击直接忽略
                         if (releaseMicJob?.isActive == true) return@releaseMic
                         releaseMicJob = lifecycleScope.launch {
                             val result = playback.forceReleaseMicOccupation()

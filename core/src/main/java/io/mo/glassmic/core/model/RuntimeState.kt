@@ -24,8 +24,10 @@ data class RuntimeState(
      */
     val forceReleaseToken: Long = 0L,
     /**
-     * 墙钟时间：在此之前，作用域内 App 的 startRecording / MediaRecorder.start 会被拒绝，
+     * 墙钟截止时间：在此之前，作用域内 App 的 startRecording / MediaRecorder.start 会被拒绝，
      * 并持续 stop/release，防止掐断后立刻重连占麦。
+     * 取 [io.mo.glassmic.core.Constants.MIC_RELEASE_BLOCK_INDEFINITE_UNTIL] 表示持续禁录直至用户手动恢复；
+     * 取 0 表示未禁录。
      */
     val recordingBlockUntilMs: Long = 0L,
 )

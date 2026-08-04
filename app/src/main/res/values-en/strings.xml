@@ -300,10 +300,12 @@
 
     <string name="float_local_monitor">Local Monitor</string>
     <string name="float_output_volume">Output Volume</string>
-    <string name="float_release_mic">Release Mic</string>
+    <string name="float_release_mic">Release &amp; block mic</string>
+    <string name="float_release_mic_restore">Allow recording</string>
     <string name="float_release_mic_done">Requested mic release</string>
-    <string name="float_release_mic_scoped_blocked">Released in-scope mic; blocked for %1$d s</string>
+    <string name="float_release_mic_scoped_blocked">Released in-scope mic; recording blocked until you tap again</string>
+    <string name="float_release_mic_restored">Recording allowed again</string>
     <string name="float_release_mic_root_failed">Failed — check Root permission</string>
     <string name="float_release_mic_cooldown">Don\'t tap repeatedly — try again in %1$d s</string>
-    <string name="float_release_mic_busy">Still releasing, please wait</string>
+    <string name="float_release_mic_busy">Still working, please wait</string>
 </resources>

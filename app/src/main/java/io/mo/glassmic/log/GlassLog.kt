@@ -24,6 +24,8 @@ object GlassLog {
     private const val TAG_PREFIX = "yuhuo/"
     private const val RING_CAPACITY = 2000
     private const val LOG_FILE_NAME = "yuhuo.log"
+    /** LogEntry 对象头 + 时间戳 + 级别的大致开销，只做日志展示，不追求精确。 */
+    private const val ENTRY_OVERHEAD_BYTES = 64L
 
     @Volatile
     var enabled: Boolean = true
@@ -83,6 +85,29 @@ object GlassLog {
         ring.clear()
         ioExecutor.execute { logFile.get()?.writeText("") }
     }
+
+    /**
+     * 内存吃紧时用的裁剪方法：只保留最近 [keep] 条，返回估算释放的字节数。
+     * 日志已异步落盘，裁掉内存副本只影响排查便利性。
+     */
+    fun trimRing(keep: Int): Long {
+        var freed = 0L
+        while (ring.size > keep) {
+            val e = ring.pollFirst() ?: break
+            freed += ENTRY_OVERHEAD_BYTES + (e.message.length + e.tag.length) * 2L
+        }
+        return freed
+    }
+
+    /**
+     * 等待队列里排队的异步写落盘（单线程 FIFO，队尾任务跑完说明前面都写完了）。
+     * 用于查杀广播前的现场备份；超时返回 false。
+     */
+    fun flush(timeoutMs: Long): Boolean = runCatching {
+        val latch = java.util.concurrent.CountDownLatch(1)
+        ioExecutor.execute { latch.countDown() }
+        latch.await(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+    }.getOrDefault(false)
 }
 
 data class LogEntry(

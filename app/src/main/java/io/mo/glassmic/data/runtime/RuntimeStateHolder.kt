@@ -1,5 +1,6 @@
 package io.mo.glassmic.data.runtime
 
+import io.mo.glassmic.core.Constants
 import io.mo.glassmic.core.model.PlaybackPolicy
 import io.mo.glassmic.core.model.RuntimeState
 import io.mo.glassmic.core.model.SourceType
@@ -32,7 +33,9 @@ class RuntimeStateHolder @Inject constructor() {
         } else {
             it.copy(
                 enabled = false,
-                realMicPassThrough = false
+                realMicPassThrough = false,
+                // 服务停止时一并撤掉持续禁录，避免下次启动仍卡在禁录态
+                recordingBlockUntilMs = 0L,
             )
         }
     }
@@ -77,20 +80,29 @@ class RuntimeStateHolder @Inject constructor() {
     fun setError(msg: String?) = _flow.update { it.copy(lastError = msg) }
 
     /**
-     * 通知作用域内进程：立刻打断录音，并在 [blockDurationMs] 内禁止重开录音。
+     * 通知作用域内进程：立刻打断录音，并持续禁止重开录音，直到 [clearMicRelease]。
      * @return 新的 forceReleaseToken
      */
-    fun armMicRelease(blockDurationMs: Long = 5_000L): Long {
+    fun armMicRelease(): Long {
         var next = 0L
-        val until = System.currentTimeMillis() + blockDurationMs.coerceIn(1_000L, 60_000L)
         _flow.update {
             next = it.forceReleaseToken + 1L
             it.copy(
                 forceReleaseToken = next,
-                recordingBlockUntilMs = until,
+                recordingBlockUntilMs = Constants.MIC_RELEASE_BLOCK_INDEFINITE_UNTIL,
             )
         }
         return next
+    }
+
+    /** 解除持续禁录，允许作用域内 App 重新开录。 */
+    fun clearMicRelease() {
+        _flow.update { it.copy(recordingBlockUntilMs = 0L) }
+    }
+
+    fun isRecordingBlocked(): Boolean {
+        val until = value.recordingBlockUntilMs
+        return until > 0L && System.currentTimeMillis() < until
     }
 
     fun recordingBlockUntilMs(): Long = value.recordingBlockUntilMs

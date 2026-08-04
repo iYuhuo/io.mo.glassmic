@@ -1,4 +1,4 @@
-﻿package io.mo.glassmic.service
+package io.mo.glassmic.service
 
 import android.graphics.BitmapFactory
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -150,6 +150,8 @@ fun FloatingBubbleRoot(
     onToggleLocalMonitor: (Boolean) -> Unit,
     onOutputVolumeChange: (Float) -> Unit,
     onOutputVolumeChangeFinished: (Float) -> Unit,
+    /** 作用域内是否正处于持续禁录。 */
+    recordingBlocked: Boolean,
     onReleaseMicOccupation: () -> Unit,
     onDragBy: (Float, Float) -> Unit,
     onDragEnd: () -> Unit,
@@ -204,18 +206,9 @@ fun FloatingBubbleRoot(
                     if (onTts) R.string.float_tab_tts else R.string.float_tab_library
                 ),
                 titleTrailing = {
-                    // 一键解除麦克风占用：样式与下方 🎵 / 🗣 切换图标一致
-                    Text(
-                        "🔇",
-                        fontSize = 14.sp,
-                        modifier = Modifier
-                            .clip(CircleShape)
-                            .background(OverlayColors.FillStrong)
-                            .clickable(
-                                onClick = onReleaseMicOccupation,
-                                onClickLabel = stringResource(R.string.float_release_mic)
-                            )
-                            .padding(horizontal = 8.dp, vertical = 5.dp)
+                    MicBlockToggle(
+                        blocked = recordingBlocked,
+                        onClick = onReleaseMicOccupation,
                     )
                     Spacer(Modifier.width(6.dp))
                     if (onTts) {
@@ -304,6 +297,7 @@ fun FloatingBubbleRoot(
             onToggleLocalMonitor = onToggleLocalMonitor,
             onOutputVolumeChange = onOutputVolumeChange,
             onOutputVolumeChangeFinished = onOutputVolumeChangeFinished,
+            recordingBlocked = recordingBlocked,
             onReleaseMicOccupation = onReleaseMicOccupation,
             onBack = onCloseTtsSettings,
             onCollapse = onCollapse,
@@ -325,6 +319,32 @@ private fun Modifier.dragHandle(
         change.consume()
         onDragBy(drag.x, drag.y)
     }
+}
+
+/** 解除占用 / 持续禁录切换按钮。禁录中高亮，再次点击恢复。 */
+@Composable
+private fun MicBlockToggle(
+    blocked: Boolean,
+    onClick: () -> Unit,
+) {
+    Text(
+        if (blocked) "🎤" else "🔇",
+        fontSize = 14.sp,
+        modifier = Modifier
+            .clip(CircleShape)
+            .background(
+                if (blocked) OverlayColors.Danger.copy(alpha = 0.45f)
+                else OverlayColors.FillStrong
+            )
+            .clickable(
+                onClick = onClick,
+                onClickLabel = stringResource(
+                    if (blocked) R.string.float_release_mic_restore
+                    else R.string.float_release_mic
+                )
+            )
+            .padding(horizontal = 8.dp, vertical = 5.dp)
+    )
 }
 
 // ============ 展开态共享外壳 ============
@@ -993,6 +1013,7 @@ private fun TtsSettingsPanel(
     onToggleLocalMonitor: (Boolean) -> Unit,
     onOutputVolumeChange: (Float) -> Unit,
     onOutputVolumeChangeFinished: (Float) -> Unit,
+    recordingBlocked: Boolean,
     onReleaseMicOccupation: () -> Unit,
     onBack: () -> Unit,
     onCollapse: () -> Unit,
@@ -1006,17 +1027,9 @@ private fun TtsSettingsPanel(
         title = stringResource(R.string.float_tts_settings_title),
         onBack = onBack,
         titleTrailing = {
-            Text(
-                "🔇",
-                fontSize = 14.sp,
-                modifier = Modifier
-                    .clip(CircleShape)
-                    .background(OverlayColors.FillStrong)
-                    .clickable(
-                        onClick = onReleaseMicOccupation,
-                        onClickLabel = stringResource(R.string.float_release_mic)
-                    )
-                    .padding(horizontal = 8.dp, vertical = 5.dp)
+            MicBlockToggle(
+                blocked = recordingBlocked,
+                onClick = onReleaseMicOccupation,
             )
             Spacer(Modifier.width(6.dp))
         }

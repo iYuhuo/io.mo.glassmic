@@ -300,10 +300,12 @@
 
     <string name="float_local_monitor">本地监听</string>
     <string name="float_output_volume">输出音量</string>
-    <string name="float_release_mic">解除占用</string>
+    <string name="float_release_mic">解除占用并禁录</string>
+    <string name="float_release_mic_restore">恢复录音</string>
     <string name="float_release_mic_done">已请求解除麦克风占用</string>
-    <string name="float_release_mic_scoped_blocked">已解除作用域内占用，并禁录 %1$d 秒</string>
+    <string name="float_release_mic_scoped_blocked">已解除占用并持续禁录，再次点击可恢复</string>
+    <string name="float_release_mic_restored">已恢复录音</string>
     <string name="float_release_mic_root_failed">操作失败，请确认已授予 Root</string>
     <string name="float_release_mic_cooldown">请勿连点，%1$d 秒后再试</string>
-    <string name="float_release_mic_busy">正在解除占用，请稍候</string>
+    <string name="float_release_mic_busy">正在处理，请稍候</string>
 </resources>

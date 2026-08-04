@@ -15,6 +15,9 @@ import io.mo.glassmic.data.db.AudioDao
 import io.mo.glassmic.data.runtime.MicOccupationReleaser
 import io.mo.glassmic.data.runtime.RuntimeStateHolder
 import io.mo.glassmic.log.GlassLog
+import io.mo.glassmic.memory.MemoryPressure
+import io.mo.glassmic.memory.MemoryPressureBus
+import io.mo.glassmic.memory.MemoryReleasable
 import io.mo.glassmic.service.FloatingWindowConstants
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -48,7 +51,12 @@ class PlaybackController @Inject constructor(
     private val dao: AudioDao,
     private val ttsFactory: TtsSynthesizerFactory,
     private val micOccupationReleaser: MicOccupationReleaser,
-) {
+) : MemoryReleasable {
+
+    init {
+        // 持有可丢弃的最大一块常驻内存（TTS 生成的 PCM），登记到内存压力总线。
+        MemoryPressureBus.register(this)
+    }
 
     /** 设置某个片段为当前虚拟麦克风音源。文件不存在则自动清掉数据库记录并返回 false。 */
     suspend fun setCurrentClip(clipId: String, startPaused: Boolean = false): Boolean = withContext(Dispatchers.IO) {
@@ -277,10 +285,11 @@ class PlaybackController @Inject constructor(
     }
 
     /**
-     * 一键解除麦克风占用（仅作用域内 App，不杀进程、不重启 audioserver）。
+     * 切换「解除占用 + 持续禁录」（仅作用域内 App，不杀进程、不重启 audioserver）。
+     * 已禁录时再次调用恢复录音。
      */
     suspend fun forceReleaseMicOccupation(): MicOccupationReleaser.Result = withContext(Dispatchers.IO) {
-        micOccupationReleaser.releaseBlocking(
+        micOccupationReleaser.toggleBlocking(
             onProceed = {
                 publisher.resetConsumersForNewSession()
             },
@@ -370,5 +379,35 @@ class PlaybackController @Inject constructor(
 
     suspend fun seekTo(positionMs: Long) = withContext(Dispatchers.IO) {
         publisher.seekCurrent(positionMs)
+    }
+
+    // ============ 公平运行内存：可回收内存 ============
+
+    /**
+     * 释放 TTS 生成缓存。
+     *
+     * 48kHz 单声道 PCM16 = 96KB/秒，一段一分钟的语音大约 5.6MB，是本模块最大一块
+     * 可丢弃内存。丢掉只影响「重复播放」——下一次播放用户重新生成即可恢复。
+     *
+     * 正在合成、或者 PCM 正是当前音源 / 目标 App 正在读时绝不丢——那会直接打断
+     * 正在的功能。正在出声的音频路径在任何压力等级下都不受影响。
+     */
+    override fun onMemoryPressure(level: MemoryPressure): Long {
+        val pcm = generatedTtsPcm ?: return 0L
+        if (_ttsGen.value == TtsGen.GENERATING) return 0L
+        if (publisher.playingBufferedPcm) return 0L
+        val shouldDrop = when (level) {
+            // 只是进了后台/系统刚开始吃紧：用户随时回来重播，不丢。
+            MemoryPressure.LIGHT -> false
+            // 没有 App 在读 PCM 时才丢——有录音在进行时用户会指望重播。
+            MemoryPressure.MODERATE -> publisher.consumerCount == 0
+            else -> true
+        }
+        if (!shouldDrop) return 0L
+        generatedTtsPcm = null
+        _generatedTtsText.value = null
+        _ttsGen.value = TtsGen.IDLE
+        GlassLog.b("Playback") { "内存压力($level)：释放 TTS 缓存 ${pcm.size / 1024}KB" }
+        return pcm.size.toLong()
     }
 }
