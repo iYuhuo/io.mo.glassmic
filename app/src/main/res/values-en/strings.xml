@@ -308,6 +308,10 @@
 
     <!-- AI Provider (TTS) settings page -->
     <string name="ai_tts_section_access">Access</string>
+    <string name="ai_tts_mode_label">Currently using</string>
+    <string name="ai_tts_mode_system">System TTS (local; follows the default engine, e.g. MultiTTS)</string>
+    <string name="ai_tts_mode_online">Online AI TTS</string>
+    <string name="ai_tts_mode_hint">Switching engines keeps your online settings below. System TTS uses the phone\'s default engine.</string>
     <string name="ai_tts_enable">Enable AI TTS</string>
     <string name="ai_tts_protocol">Protocol</string>
     <string name="ai_tts_provider_openai">OpenAI (/audio/speech)</string>

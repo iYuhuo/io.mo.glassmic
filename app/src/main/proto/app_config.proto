@@ -94,6 +94,9 @@ message TtsConfig {
 
   // 延时播放：点「播放」后等待多少毫秒再真正出声，0 表示立即播放
   int32 delay_ms = 6;
+
+  // TTS 播完策略（与全局 playback_policy 独立）；默认 SILENCE=切回真麦，REAL_MIC 同义
+  PlaybackPolicy playback_policy = 7;
 }
 
 // AI TTS 接入配置。兼容 OpenAI / Gemini 接口协议，支持自定义 url 与模型。

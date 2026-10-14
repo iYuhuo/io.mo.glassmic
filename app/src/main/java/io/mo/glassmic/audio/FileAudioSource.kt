@@ -245,6 +245,9 @@ class FileAudioSource(
         runCatching { extractor.release() }
     }
 
+    /** 本地监听独立解码时钟：同一文件另开一路，进度互不影响。 */
+    fun fork(): FileAudioSource = FileAudioSource(clip, filePath)
+
     private companion object {
         const val BYTES_PER_SAMPLE = 2
         const val DEQUEUE_TIMEOUT_US = 10_000L

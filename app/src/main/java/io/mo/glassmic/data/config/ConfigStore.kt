@@ -50,6 +50,9 @@ class ConfigStore @Inject constructor(
 
     suspend fun current(): AppConfig = dataStore.data.first()
 
+    /** 谨慎使用——runBlocking。仅在无法挂起的同步路径读取完整配置。 */
+    fun currentBlocking(): AppConfig = runBlocking { dataStore.data.first() }
+
     suspend fun update(transform: (AppConfig.Builder) -> Unit) {
         val updated = dataStore.updateData { current ->
             current.toBuilder().also(transform).build()

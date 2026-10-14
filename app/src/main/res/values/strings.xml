@@ -308,6 +308,10 @@
 
     <!-- AI 供应商（TTS）配置页 -->
     <string name="ai_tts_section_access">接入</string>
+    <string name="ai_tts_mode_label">当前使用</string>
+    <string name="ai_tts_mode_system">系统 TTS（本地，跟随系统默认引擎，如 MultiTTS）</string>
+    <string name="ai_tts_mode_online">在线 AI TTS</string>
+    <string name="ai_tts_mode_hint">切换引擎不会清除下方在线配置；选「系统 TTS」时用手机默认引擎合成。</string>
     <string name="ai_tts_enable">启用 AI TTS</string>
     <string name="ai_tts_protocol">接口协议</string>
     <string name="ai_tts_provider_openai">OpenAI（/audio/speech）</string>

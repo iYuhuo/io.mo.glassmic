@@ -39,6 +39,7 @@ import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.random.Random
+import org.json.JSONObject
 
 /**
  * PCM 数据广播器。
@@ -205,18 +206,29 @@ class SharedPcmPublisher @Inject constructor(
         }
     }
 
-    /** Xposed 进程通过 ContentProvider 调到这里 */
+    /**
+     * Xposed / AudioPolicy 通过 ContentProvider 调到这里。
+     * [bufferBytes] 尝试设置 Linux pipe 容量；[queueCapacity] 控制有界队列；
+     * [framed] 保留参数以兼容上游调用方（当前写入路径统一按整帧队列处理）。
+     */
+    @Suppress("UNUSED_PARAMETER")
     fun attachConsumer(
         consumerPackage: String,
         sampleRate: Int,
         channels: Int,
-        writeFd: ParcelFileDescriptor
-    ) {
+        writeFd: ParcelFileDescriptor,
+        bufferBytes: Int = 32768,
+        queueCapacity: Int = 16,
+        framed: Boolean = false
+    ): String {
+        runCatching {
+            android.system.Os.fcntlInt(writeFd.fileDescriptor, 1031 /* F_SETPIPE_SZ */, bufferBytes)
+        }
         val id = buildConsumerId(consumerPackage)
         val fos = FileOutputStream(writeFd.fileDescriptor)
         // 实时主时钟 + 有界队列：满则丢新帧，绝不 await 目标 App
         // 「播完又放出开头」靠 EOF/换源 detachAll，不靠背压死等
-        val queue = Channel<ByteArray>(capacity = 16)
+        val queue = Channel<ByteArray>(capacity = queueCapacity.coerceAtLeast(1))
         val safeSampleRate = sampleRate.coerceAtLeast(8_000)
         val safeChannels = channels.coerceAtLeast(1)
         val consumer = Consumer(
@@ -238,6 +250,17 @@ class SharedPcmPublisher @Inject constructor(
         startConsumerWriter(consumer)
         GlassLog.b("Publisher") { "新 consumer: $id pkg=$consumerPackage sr=$sampleRate ch=$channels" }
         ensureWriterRunning()
+        return id
+    }
+
+    /** 诊断包用的轻量快照。 */
+    fun diagnostics(): JSONObject = JSONObject().apply {
+        put("captured_at", System.currentTimeMillis())
+        put("paused", paused)
+        put("monitor_enabled", monitorEnabled)
+        put("active_consumer_count", consumers.size)
+        put("source_type", currentSource.type.name)
+        put("output_volume", outputVolume())
     }
 
     fun setSource(
