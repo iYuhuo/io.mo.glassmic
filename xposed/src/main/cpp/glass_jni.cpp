@@ -1,4 +1,5 @@
 #include "glass_aaudio.h"
+#include "glass_audio_tap.h"
 #include "glass_opensl.h"
 #include "glass_audiorecord.h"
 #include "glass_log.h"
@@ -48,6 +49,27 @@ Java_io_mo_glassmic_xposed_NativeAAudioHook_nativeSetPcmFd(
     set_pcm_fd(fd, sample_rate, channels);
 }
 
+JNIEXPORT jboolean JNICALL
+Java_io_mo_glassmic_xposed_NativeAAudioHook_nativeHasPcmFd(JNIEnv*, jclass) {
+    return has_pcm_fd() ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT void JNICALL
+Java_io_mo_glassmic_xposed_NativeAAudioHook_nativeForceReleaseInputs(JNIEnv*, jclass) {
+    force_release_audio_inputs();
+}
+
+/** 调试抓取 fd（socketpair 写端），所有权交给 native；-1 关闭。 */
+JNIEXPORT void JNICALL
+Java_io_mo_glassmic_xposed_NativeAAudioHook_nativeSetTapFd(JNIEnv* env, jclass, jint fd) {
+    set_tap_fd(fd);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_io_mo_glassmic_xposed_NativeAAudioHook_nativeTapActive(JNIEnv* env, jclass) {
+    return tap_active() ? JNI_TRUE : JNI_FALSE;
+}
+
 /**
  * dup() a FileDescriptor and return the new fd number.
  * Used on API < 33 where ParcelFileDescriptor.detachFd() is unavailable.
@@ -65,35 +87,33 @@ Java_io_mo_glassmic_xposed_NativeAAudioHook_nativeDupFd(JNIEnv* env, jclass, job
 }
 
 /**
- * 返回 long[4] = { reads, bytes, last_sample_rate, last_channels }
+ * 返回 long[10]：替换统计 [0..8]，以及包含 REAL_MIC 的独立录音活动计数 [9]。
  */
-
-JNIEXPORT jboolean JNICALL
-Java_io_mo_glassmic_xposed_NativeAAudioHook_nativeHasPcmFd(JNIEnv*, jclass) {
-    return has_pcm_fd() ? JNI_TRUE : JNI_FALSE;
-}
-
 JNIEXPORT jlongArray JNICALL
 Java_io_mo_glassmic_xposed_NativeAAudioHook_nativeDrainStats(JNIEnv* env, jclass) {
     uint64_t reads = 0, bytes = 0;
     int32_t  sr = 0, ch = 0;
-    drain_stats(&reads, &bytes, &sr, &ch);
+    uint64_t underruns = 0, missing = 0, requested = 0;
+    int32_t path = 0;
+    uint64_t skipped = 0, captures = 0;
+    drain_stats(&reads, &bytes, &sr, &ch, &underruns, &missing, &requested, &path, &skipped, &captures);
 
-    jlong out[4];
+    jlong out[10];
     out[0] = static_cast<jlong>(reads);
     out[1] = static_cast<jlong>(bytes);
     out[2] = static_cast<jlong>(sr);
     out[3] = static_cast<jlong>(ch);
+    out[4] = static_cast<jlong>(underruns);
+    out[5] = static_cast<jlong>(missing);
+    out[6] = static_cast<jlong>(requested);
+    out[7] = static_cast<jlong>(path);
+    out[8] = static_cast<jlong>(skipped);
+    out[9] = static_cast<jlong>(captures);
 
-    jlongArray arr = env->NewLongArray(4);
+    jlongArray arr = env->NewLongArray(10);
     if (!arr) return nullptr;
-    env->SetLongArrayRegion(arr, 0, 4, out);
+    env->SetLongArrayRegion(arr, 0, 10, out);
     return arr;
-}
-
-JNIEXPORT void JNICALL
-Java_io_mo_glassmic_xposed_NativeAAudioHook_nativeForceReleaseInputs(JNIEnv*, jclass) {
-    force_release_audio_inputs();
 }
 
 } // extern "C"

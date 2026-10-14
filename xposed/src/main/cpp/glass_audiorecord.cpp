@@ -72,7 +72,7 @@ static void detect_format(
     }
 
     *out_sr = sr > 0 ? sr : 48'000;
-    *out_ch = ch;  // 0 表示未取到，调用方据 read 字节数兜底
+    *out_ch = (ch >= 1 && ch <= 8) ? ch : 1;  // 未取到时默认 1 单声道
     *out_fmt = fmt;
     if (out_sr_off) *out_sr_off = sr_off;
 }
@@ -81,17 +81,20 @@ static ssize_t my_read(void* thiz, void* buffer, size_t size, bool blocking) {
     ssize_t n = g_orig_read(thiz, buffer, size, blocking);
     if (n <= 0 || !buffer || !thiz) return n;
 
-    if (get_decision() == Decision::REAL_MIC) return n;
+    if (aaudio_read_in_progress) return n;
+    if (get_decision() == Decision::REAL_MIC) {
+        note_capture(CapturePath::AUDIORECORD);
+        return n;
+    }
 
-    int32_t sr = 48'000, ch = 0;
+    int32_t sr = 48'000, ch = 1;
     SampleFmt fmt = SampleFmt::S16;
     int sr_off = -1;
     detect_format(thiz, &sr, &ch, &fmt, &sr_off);
 
     int32_t bps = (fmt == SampleFmt::FLOAT) ? 4 : 2;
     if (ch <= 0) {
-        // 未取到声道：按字节数兜底（frameSize 4 整除→stereo，否则 mono）。
-        ch = (n % (bps * 2) == 0) ? 2 : 1;
+        ch = 1; // 麦克风录音默认单声道
     }
 
     if (!g_dumped.exchange(true)) {
@@ -102,7 +105,7 @@ static ssize_t my_read(void* thiz, void* buffer, size_t size, bool blocking) {
     int32_t frame_bytes = ch * bps;
     int32_t frames = static_cast<int32_t>(n) / frame_bytes;
     if (frames > 0) {
-        fill_pcm(buffer, fmt, ch, sr, frames);
+        fill_pcm(buffer, fmt, ch, sr, frames, CapturePath::AUDIORECORD, thiz);
     }
     return n;
 }

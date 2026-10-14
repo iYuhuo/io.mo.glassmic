@@ -1,5 +1,7 @@
 #include "glass_aaudio.h"
+#include "glass_audio_tap.h"
 #include "glass_opensl.h"
+#include "glass_pcm_broadcast.h"
 #include "glass_log.h"
 
 #include <aaudio/AAudio.h>
@@ -9,10 +11,14 @@
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
+#include <fcntl.h>
 #include <mutex>
+#include <numeric>
+#include <thread>
+#include <unistd.h>
+#include <pthread.h>
 #include <unordered_set>
 #include <vector>
-#include <unistd.h>
 
 namespace glass {
 
@@ -28,13 +34,27 @@ struct PcmFdState {
 static std::mutex g_fd_mutex;
 static PcmFdState g_fd_state;
 
+// 跟踪本进程内出现过的 AAudio 输入流，供一键解除占用时 requestStop。
 static std::mutex g_streams_mutex;
 static std::unordered_set<AAudioStream*> g_input_streams;
 
+// fd 锁只负责 read/close；音频线程不与系统调用争锁。
+// 缓冲锁只覆盖内存复制/游标更新，格式转换在锁外完成。
+static std::mutex g_buffer_mutex;
+static PcmBroadcastBuffer<65536> g_ring_buffer;
+static uint64_t g_pcm_generation = 0;
+static std::atomic<bool> g_worker_running{false};
+
 static std::atomic<uint64_t> g_pending_reads{0};
+static std::atomic<uint64_t> g_pending_capture_reads{0};
 static std::atomic<uint64_t> g_pending_bytes{0};
 static std::atomic<int32_t> g_last_sr{0};
 static std::atomic<int32_t> g_last_ch{0};
+static std::atomic<uint64_t> g_pending_underruns{0};
+static std::atomic<uint64_t> g_pending_missing_frames{0};
+static std::atomic<uint64_t> g_pending_requested_frames{0};
+static std::atomic<uint64_t> g_pending_skipped_source_frames{0};
+static std::atomic<int32_t> g_last_path{0};
 
 using AAudioStream_read_fn = aaudio_result_t(*)(AAudioStream*, void*, int32_t, int64_t);
 static AAudioStream_read_fn g_orig_AAudioStream_read = nullptr;
@@ -56,92 +76,7 @@ static int32_t bytes_per_dst_sample(aaudio_format_t fmt) {
     }
 }
 
-static int32_t map_src_frame(int32_t dst_frame, int32_t src_frames, int32_t dst_frames) {
-    if (src_frames <= 1 || dst_frames <= 1) return 0;
-    int32_t mapped = static_cast<int32_t>(
-        (static_cast<int64_t>(dst_frame) * src_frames) / dst_frames
-    );
-    return mapped >= src_frames ? src_frames - 1 : mapped;
-}
-
-static void convert_and_write(
-    void* dst,
-    aaudio_format_t fmt,
-    int32_t dst_channels,
-    const int16_t* src,
-    int32_t src_frames,
-    int32_t src_channels,
-    int32_t dst_frames
-) {
-    if (!dst || !src || src_frames <= 0 || dst_frames <= 0 || src_channels <= 0 || dst_channels <= 0) {
-        return;
-    }
-
-    switch (fmt) {
-        case AAUDIO_FORMAT_PCM_I16: {
-            auto* d = static_cast<int16_t*>(dst);
-            for (int32_t f = 0; f < dst_frames; ++f) {
-                int32_t si = map_src_frame(f, src_frames, dst_frames);
-                int16_t lv = src[si * src_channels];
-                int16_t rv = src_channels > 1 ? src[si * src_channels + 1] : lv;
-                for (int32_t c = 0; c < dst_channels; ++c) {
-                    *d++ = c == 0 ? lv : (c == 1 ? rv : 0);
-                }
-            }
-            break;
-        }
-        case AAUDIO_FORMAT_PCM_FLOAT: {
-            auto* d = static_cast<float*>(dst);
-            constexpr float kScale = 1.0f / 32768.0f;
-            for (int32_t f = 0; f < dst_frames; ++f) {
-                int32_t si = map_src_frame(f, src_frames, dst_frames);
-                float lv = src[si * src_channels] * kScale;
-                float rv = src_channels > 1 ? src[si * src_channels + 1] * kScale : lv;
-                for (int32_t c = 0; c < dst_channels; ++c) {
-                    *d++ = c == 0 ? lv : (c == 1 ? rv : 0.0f);
-                }
-            }
-            break;
-        }
-        case AAUDIO_FORMAT_PCM_I32: {
-            auto* d = static_cast<int32_t*>(dst);
-            for (int32_t f = 0; f < dst_frames; ++f) {
-                int32_t si = map_src_frame(f, src_frames, dst_frames);
-                int32_t lv = static_cast<int32_t>(src[si * src_channels]) << 16;
-                int32_t rv = src_channels > 1
-                    ? static_cast<int32_t>(src[si * src_channels + 1]) << 16
-                    : lv;
-                for (int32_t c = 0; c < dst_channels; ++c) {
-                    *d++ = c == 0 ? lv : (c == 1 ? rv : 0);
-                }
-            }
-            break;
-        }
-        case AAUDIO_FORMAT_PCM_I24_PACKED: {
-            auto* d = static_cast<uint8_t*>(dst);
-            for (int32_t f = 0; f < dst_frames; ++f) {
-                int32_t si = map_src_frame(f, src_frames, dst_frames);
-                int32_t lv = static_cast<int32_t>(src[si * src_channels]) << 8;
-                int32_t rv = src_channels > 1
-                    ? static_cast<int32_t>(src[si * src_channels + 1]) << 8
-                    : lv;
-                for (int32_t c = 0; c < dst_channels; ++c) {
-                    int32_t v = c == 0 ? lv : (c == 1 ? rv : 0);
-                    *d++ = static_cast<uint8_t>(v & 0xFF);
-                    *d++ = static_cast<uint8_t>((v >> 8) & 0xFF);
-                    *d++ = static_cast<uint8_t>((v >> 16) & 0xFF);
-                }
-            }
-            break;
-        }
-        default:
-            std::memset(dst, 0, static_cast<size_t>(dst_frames) * dst_channels * bytes_per_dst_sample(fmt));
-            break;
-    }
-}
-
 // 舒适噪声幅度：±8 LSB ≈ -72 dBFS，人耳不可闻，但足以让下游 App 的 VAD 判定"有信号"。
-// 与 Kotlin 侧 io.mo.glassmic.core.audio.ComfortNoise / app 侧 ComfortNoiseSource 保持一致。
 static constexpr int32_t kComfortAmplitude = 8;
 
 // 轻量 xorshift32，仅用于生成极低电平噪声，无需密码学质量。每线程独立种子。
@@ -152,9 +87,7 @@ static inline int32_t next_comfort_sample() {
     return static_cast<int32_t>(s % (2u * kComfortAmplitude + 1u)) - kComfortAmplitude;
 }
 
-// 用舒适噪声填满输入缓冲，替代纯 0 静音——纯数字 0 是"死麦"特征，
-// 微信等录音端持续读到全 0 会判"无音频输入/麦克风被占用"而中断录音。
-// 按各 PCM 格式把 16bit 域的低电平样本换算写入（换算方式与 convert_and_write 一致）。
+// 用舒适噪声填满输入缓冲，替代纯 0 静音
 static void fill_comfort_noise(
     void* buffer, aaudio_format_t fmt, int32_t channels, int32_t numFrames
 ) {
@@ -193,20 +126,221 @@ static void fill_comfort_noise(
     }
 }
 
-static int read_full(int fd, uint8_t* buf, int n) {
-    int got = 0;
-    while (got < n) {
-        ssize_t r = ::read(fd, buf + got, n - got);
-        if (r > 0) {
-            got += static_cast<int>(r);
-        } else if (r == 0) {
-            break;
-        } else {
-            if (errno == EINTR) continue;
-            return got > 0 ? got : -1;
-        }
+static inline float soft_limit_f(float sample) {
+    constexpr float threshold = 30000.0f;
+    constexpr float max_val = 32767.0f;
+    float abs_val = sample < 0.0f ? -sample : sample;
+    if (abs_val <= threshold) return sample;
+    float over = abs_val - threshold;
+    float range = max_val - threshold;
+    float norm = over / range;
+    float soft = (norm / (1.0f + norm)) * range;
+    float res = threshold + soft;
+    return sample < 0.0f ? -res : res;
+}
+
+/**
+ * 转换 PCM 并写入目标 buffer：
+ * 按采样率映射线性插值，不足部分补零；不能把短读数据拉伸到整块目标时长。
+ */
+static void convert_and_write(
+    void* dst,
+    aaudio_format_t fmt,
+    int32_t dst_channels,
+    int32_t dst_sample_rate,
+    const int16_t* src,
+    int32_t src_frames,
+    int32_t src_channels,
+    int32_t src_sample_rate,
+    int32_t dst_frames
+) {
+    if (!dst || dst_frames <= 0 || dst_channels <= 0) return;
+
+    // 计算实际可转换的有效目标帧数
+    int32_t valid_dst_frames = 0;
+    if (src && src_frames > 0 && src_channels > 0 && src_sample_rate > 0 && dst_sample_rate > 0) {
+        valid_dst_frames = static_cast<int32_t>(
+            (static_cast<int64_t>(src_frames) * dst_sample_rate) / src_sample_rate
+        );
+        if (valid_dst_frames > dst_frames) valid_dst_frames = dst_frames;
     }
-    return got;
+
+    constexpr float kFloatScale = 1.0f / 32768.0f;
+
+    switch (fmt) {
+        case AAUDIO_FORMAT_PCM_I16: {
+            auto* d = static_cast<int16_t*>(dst);
+            for (int32_t f = 0; f < valid_dst_frames; ++f) {
+                double src_pos = (static_cast<double>(f) * src_sample_rate) / dst_sample_rate;
+                int32_t i0 = static_cast<int32_t>(src_pos);
+                float frac = static_cast<float>(src_pos - i0);
+                if (i0 >= src_frames) i0 = src_frames - 1;
+                int32_t i1 = (i0 + 1 < src_frames) ? i0 + 1 : i0;
+
+                float lv0 = static_cast<float>(src[i0 * src_channels]);
+                float lv1 = static_cast<float>(src[i1 * src_channels]);
+                int16_t lv = static_cast<int16_t>(soft_limit_f(lv0 + (lv1 - lv0) * frac));
+
+                int16_t rv = lv;
+                if (src_channels > 1) {
+                    float rv0 = static_cast<float>(src[i0 * src_channels + 1]);
+                    float rv1 = static_cast<float>(src[i1 * src_channels + 1]);
+                    rv = static_cast<int16_t>(soft_limit_f(rv0 + (rv1 - rv0) * frac));
+                }
+                // 欠载时在有效末尾极短淡出（16 帧），消除硬截断导致的咔哒杂音
+                if (valid_dst_frames < dst_frames && valid_dst_frames - f <= 16) {
+                    float fade = static_cast<float>(valid_dst_frames - f) / 16.0f;
+                    lv = static_cast<int16_t>(lv * fade);
+                    rv = static_cast<int16_t>(rv * fade);
+                }
+                for (int32_t c = 0; c < dst_channels; ++c) {
+                    *d++ = c == 0 ? lv : (c == 1 ? rv : 0);
+                }
+            }
+            // 欠载不足部分静音填充，避免拼接白噪声切片
+            for (int32_t f = valid_dst_frames; f < dst_frames; ++f) {
+                for (int32_t c = 0; c < dst_channels; ++c) *d++ = 0;
+            }
+            break;
+        }
+        case AAUDIO_FORMAT_PCM_FLOAT: {
+            auto* d = static_cast<float*>(dst);
+            for (int32_t f = 0; f < valid_dst_frames; ++f) {
+                double src_pos = (static_cast<double>(f) * src_sample_rate) / dst_sample_rate;
+                int32_t i0 = static_cast<int32_t>(src_pos);
+                float frac = static_cast<float>(src_pos - i0);
+                if (i0 >= src_frames) i0 = src_frames - 1;
+                int32_t i1 = (i0 + 1 < src_frames) ? i0 + 1 : i0;
+
+                float lv0 = static_cast<float>(src[i0 * src_channels]);
+                float lv1 = static_cast<float>(src[i1 * src_channels]);
+                float lv = (lv0 + (lv1 - lv0) * frac) * kFloatScale;
+
+                float rv = lv;
+                if (src_channels > 1) {
+                    float rv0 = static_cast<float>(src[i0 * src_channels + 1]);
+                    float rv1 = static_cast<float>(src[i1 * src_channels + 1]);
+                    rv = (rv0 + (rv1 - rv0) * frac) * kFloatScale;
+                }
+                if (valid_dst_frames < dst_frames && valid_dst_frames - f <= 16) {
+                    float fade = static_cast<float>(valid_dst_frames - f) / 16.0f;
+                    lv *= fade;
+                    rv *= fade;
+                }
+                for (int32_t c = 0; c < dst_channels; ++c) {
+                    *d++ = c == 0 ? lv : (c == 1 ? rv : 0.0f);
+                }
+            }
+            for (int32_t f = valid_dst_frames; f < dst_frames; ++f) {
+                for (int32_t c = 0; c < dst_channels; ++c) *d++ = 0.0f;
+            }
+            break;
+        }
+        case AAUDIO_FORMAT_PCM_I32: {
+            auto* d = static_cast<int32_t*>(dst);
+            for (int32_t f = 0; f < valid_dst_frames; ++f) {
+                double src_pos = (static_cast<double>(f) * src_sample_rate) / dst_sample_rate;
+                int32_t i0 = static_cast<int32_t>(src_pos);
+                float frac = static_cast<float>(src_pos - i0);
+                if (i0 >= src_frames) i0 = src_frames - 1;
+                int32_t i1 = (i0 + 1 < src_frames) ? i0 + 1 : i0;
+
+                float lv0 = static_cast<float>(src[i0 * src_channels]);
+                float lv1 = static_cast<float>(src[i1 * src_channels]);
+                int32_t lv = static_cast<int32_t>(soft_limit_f(lv0 + (lv1 - lv0) * frac)) << 16;
+
+                int32_t rv = lv;
+                if (src_channels > 1) {
+                    float rv0 = static_cast<float>(src[i0 * src_channels + 1]);
+                    float rv1 = static_cast<float>(src[i1 * src_channels + 1]);
+                    rv = static_cast<int32_t>(soft_limit_f(rv0 + (rv1 - rv0) * frac)) << 16;
+                }
+                if (valid_dst_frames < dst_frames && valid_dst_frames - f <= 16) {
+                    float fade = static_cast<float>(valid_dst_frames - f) / 16.0f;
+                    lv = static_cast<int32_t>(lv * fade);
+                    rv = static_cast<int32_t>(rv * fade);
+                }
+                for (int32_t c = 0; c < dst_channels; ++c) {
+                    *d++ = c == 0 ? lv : (c == 1 ? rv : 0);
+                }
+            }
+            for (int32_t f = valid_dst_frames; f < dst_frames; ++f) {
+                for (int32_t c = 0; c < dst_channels; ++c) *d++ = 0;
+            }
+            break;
+        }
+        case AAUDIO_FORMAT_PCM_I24_PACKED: {
+            auto* d = static_cast<uint8_t*>(dst);
+            for (int32_t f = 0; f < valid_dst_frames; ++f) {
+                double src_pos = (static_cast<double>(f) * src_sample_rate) / dst_sample_rate;
+                int32_t i0 = static_cast<int32_t>(src_pos);
+                float frac = static_cast<float>(src_pos - i0);
+                if (i0 >= src_frames) i0 = src_frames - 1;
+                int32_t i1 = (i0 + 1 < src_frames) ? i0 + 1 : i0;
+
+                float lv0 = static_cast<float>(src[i0 * src_channels]);
+                float lv1 = static_cast<float>(src[i1 * src_channels]);
+                int32_t lv = static_cast<int32_t>(soft_limit_f(lv0 + (lv1 - lv0) * frac)) << 8;
+
+                int32_t rv = lv;
+                if (src_channels > 1) {
+                    float rv0 = static_cast<float>(src[i0 * src_channels + 1]);
+                    float rv1 = static_cast<float>(src[i1 * src_channels + 1]);
+                    rv = static_cast<int32_t>(soft_limit_f(rv0 + (rv1 - rv0) * frac)) << 8;
+                }
+                if (valid_dst_frames < dst_frames && valid_dst_frames - f <= 16) {
+                    float fade = static_cast<float>(valid_dst_frames - f) / 16.0f;
+                    lv = static_cast<int32_t>(lv * fade);
+                    rv = static_cast<int32_t>(rv * fade);
+                }
+                for (int32_t c = 0; c < dst_channels; ++c) {
+                    int32_t v = c == 0 ? lv : (c == 1 ? rv : 0);
+                    *d++ = static_cast<uint8_t>(v & 0xFF);
+                    *d++ = static_cast<uint8_t>((v >> 8) & 0xFF);
+                    *d++ = static_cast<uint8_t>((v >> 16) & 0xFF);
+                }
+            }
+            for (int32_t f = valid_dst_frames; f < dst_frames; ++f) {
+                for (int32_t c = 0; c < dst_channels; ++c) {
+                    *d++ = 0; *d++ = 0; *d++ = 0;
+                }
+            }
+            break;
+        }
+        default:
+            std::memset(dst, 0, static_cast<size_t>(dst_frames) * dst_channels * bytes_per_dst_sample(fmt));
+            break;
+    }
+}
+
+// 后台异步管道读取循环
+static void pcm_reader_worker_loop() {
+    pthread_setname_np(pthread_self(), "GlassPcmWorker");
+    uint8_t chunk[2048];
+    while (g_worker_running.load(std::memory_order_relaxed)) {
+        ssize_t r = -1;
+        {
+            std::lock_guard<std::mutex> lock(g_fd_mutex);
+            const int fd = g_fd_state.fd;
+            if (fd >= 0) {
+                r = ::read(fd, chunk, sizeof(chunk));
+                if (r > 0) {
+                    std::lock_guard<std::mutex> buffer_lock(g_buffer_mutex);
+                    g_ring_buffer.write(chunk, static_cast<size_t>(r));
+                }
+            }
+        }
+        // 不在持锁期间睡眠；也不会 close/reuse 一个仍在 read 的 fd。
+        if (r <= 0) usleep(1000);
+    }
+}
+
+static void ensure_worker_started() {
+    bool expected = false;
+    if (g_worker_running.compare_exchange_strong(expected, true)) {
+        std::thread t(pcm_reader_worker_loop);
+        t.detach();
+    }
 }
 
 /**
@@ -214,33 +348,29 @@ static int read_full(int fd, uint8_t* buf, int n) {
  *
  * 返回值：
  *   FillResult::FILLED   —— buffer 已被虚拟数据覆盖
- *   FillResult::PASS     —— 当前应放行真实麦克风（REAL_MIC，或 FILE 但暂无可读数据）
- *
- * 同时累计劫持统计。read() 路径与 data-callback 路径共用本函数。
+ *   FillResult::PASS     —— 当前应放行真实麦克风（REAL_MIC）
  */
 enum class FillResult { FILLED, PASS };
 
-/**
- * 不依赖 AAudioStream 的底层填充：把虚拟音源按给定 PCM 格式写进 buffer。
- * AAudio（read / data-callback）与 OpenSL ES 两条路径共用本函数。
- */
 static FillResult fill_pcm_impl(
     void* buffer,
     aaudio_format_t dst_fmt,
     int32_t dst_channels,
     int32_t dst_sample_rate,
-    int32_t numFrames
+    int32_t numFrames,
+    CapturePath path,
+    const void* stream_id = nullptr
 ) {
     if (!buffer || numFrames <= 0 || dst_channels <= 0) return FillResult::PASS;
 
+    note_capture(path);
     Decision decision = static_cast<Decision>(g_decision.load(std::memory_order_relaxed));
     if (decision == Decision::REAL_MIC) return FillResult::PASS;
 
     if (dst_sample_rate <= 0) dst_sample_rate = 48'000;
+    g_last_path.store(static_cast<int32_t>(path), std::memory_order_relaxed);
 
     if (decision == Decision::SILENCE) {
-        // 填舒适噪声而非纯 0：与 Java AudioRecordHook 的 SILENCE 分支一致，
-        // 避免微信等把持续全 0 判为"无输入/麦克风被占用"而中断录音。
         fill_comfort_noise(buffer, dst_fmt, dst_channels, numFrames);
         g_pending_reads.fetch_add(1, std::memory_order_relaxed);
         g_pending_bytes.fetch_add(static_cast<uint64_t>(numFrames) * dst_channels * 2, std::memory_order_relaxed);
@@ -249,48 +379,78 @@ static FillResult fill_pcm_impl(
         return FillResult::FILLED;
     }
 
-    // decision == FILE
-    int fd = -1;
+    // decision == FILE: 回调不得等待 worker / 切源线程持有的锁。
+    std::unique_lock<std::mutex> lock(g_buffer_mutex, std::try_to_lock);
+    g_pending_requested_frames.fetch_add(numFrames, std::memory_order_relaxed);
     int32_t src_channels = 1;
     int32_t src_sample_rate = 48'000;
-    {
-        std::lock_guard<std::mutex> lock(g_fd_mutex);
-        fd = g_fd_state.fd;
+    uint64_t generation = 0;
+    if (lock.owns_lock()) {
         src_channels = g_fd_state.channels > 0 ? g_fd_state.channels : 1;
         src_sample_rate = g_fd_state.sample_rate > 0 ? g_fd_state.sample_rate : 48'000;
+        generation = g_pcm_generation;
     }
-    if (fd < 0) return FillResult::PASS;
 
-    int32_t need_src_frames = static_cast<int32_t>(
-        (static_cast<int64_t>(numFrames) * src_sample_rate + dst_sample_rate - 1) / dst_sample_rate
-    );
-    if (need_src_frames <= 0) need_src_frames = numFrames;
-
-    int need_bytes = need_src_frames * src_channels * 2;
-    if (need_bytes > 32 * 1024) return FillResult::PASS;
-
-    uint8_t tmp[32 * 1024];
-    int got = read_full(fd, tmp, need_bytes);
-    if (got <= 0) {
-        // 写端已关 / EOF：丢掉死 fd，让 Kotlin 轮询重新 openFileDescriptor
-        std::lock_guard<std::mutex> lock(g_fd_mutex);
-        if (g_fd_state.fd == fd) {
-            if (g_fd_state.fd >= 0) ::close(g_fd_state.fd);
-            g_fd_state.fd = -1;
+    // 大请求分块转换，不能把超过栈缓冲容量的整段音频直接补零。
+    // 中间块按采样率公约数对齐，避免每块向上取整额外吞掉源帧。
+    int16_t tmp[8192];
+    const int32_t max_src_frames = 8192 / src_channels;
+    const int32_t quantum = dst_sample_rate / std::gcd(src_sample_rate, dst_sample_rate);
+    const int32_t max_dst_frames = static_cast<int32_t>(
+        static_cast<int64_t>(max_src_frames) * dst_sample_rate / src_sample_rate);
+    const int32_t block_frames = (max_dst_frames / quantum) * quantum;
+    uint64_t got = 0;
+    int32_t missing = 0;
+    int32_t offset = 0;
+    while (offset < numFrames) {
+        const int32_t count = std::min(numFrames - offset,
+            block_frames > 0 ? block_frames : max_dst_frames);
+        if (count <= 0) break;
+        const int32_t need = static_cast<int32_t>(
+            (static_cast<int64_t>(count) * src_sample_rate + dst_sample_rate - 1) / dst_sample_rate);
+        const size_t frame_bytes = static_cast<size_t>(src_channels) * 2;
+        size_t bytes = 0;
+        if (lock.owns_lock()) {
+            if (generation == g_pcm_generation) {
+                // 新录音流保留至少一个完整请求或 80ms；现有流保留独立进度。
+                const size_t request_frames = static_cast<size_t>(
+                    (static_cast<int64_t>(numFrames) * src_sample_rate + dst_sample_rate - 1) / dst_sample_rate);
+                const size_t join_bytes = std::max(request_frames,
+                    static_cast<size_t>(src_sample_rate) * 80 / 1000) * frame_bytes;
+                uint64_t skipped_bytes = 0;
+                bytes = g_ring_buffer.read(reinterpret_cast<uint8_t*>(tmp),
+                    static_cast<size_t>(need) * frame_bytes, stream_id,
+                    static_cast<int32_t>(path), frame_bytes, join_bytes, &skipped_bytes);
+                if (skipped_bytes > 0) g_pending_skipped_source_frames.fetch_add(
+                    skipped_bytes / frame_bytes, std::memory_order_relaxed);
+            }
+            lock.unlock();
         }
-        return FillResult::PASS;
+        const int32_t frames = static_cast<int32_t>(bytes / frame_bytes);
+        auto* dst = static_cast<uint8_t*>(buffer) +
+            static_cast<size_t>(offset) * dst_channels * bytes_per_dst_sample(dst_fmt);
+        convert_and_write(dst, dst_fmt, dst_channels, dst_sample_rate,
+            tmp, frames, src_channels, src_sample_rate, count);
+        const int32_t valid = static_cast<int32_t>(std::min<int64_t>(count,
+            static_cast<int64_t>(frames) * dst_sample_rate / src_sample_rate));
+        missing += count - valid;
+        got += bytes;
+        offset += count;
+        if (offset < numFrames) (void)lock.try_lock();
+    }
+    if (offset < numFrames) {
+        auto* dst = static_cast<uint8_t*>(buffer) +
+            static_cast<size_t>(offset) * dst_channels * bytes_per_dst_sample(dst_fmt);
+        std::memset(dst, 0, static_cast<size_t>(numFrames - offset) * dst_channels * bytes_per_dst_sample(dst_fmt));
+        missing += numFrames - offset;
+    }
+    if (missing > 0) {
+        g_pending_underruns.fetch_add(1, std::memory_order_relaxed);
+        g_pending_missing_frames.fetch_add(missing, std::memory_order_relaxed);
     }
 
-    int got_frames = got / (src_channels * 2);
-    convert_and_write(
-        buffer,
-        dst_fmt,
-        dst_channels,
-        reinterpret_cast<int16_t*>(tmp),
-        got_frames,
-        src_channels,
-        numFrames
-    );
+    tap_capture(buffer, dst_fmt, dst_channels, dst_sample_rate, numFrames,
+        static_cast<int32_t>(path), stream_id, missing);
 
     g_pending_reads.fetch_add(1, std::memory_order_relaxed);
     g_pending_bytes.fetch_add(static_cast<uint64_t>(got), std::memory_order_relaxed);
@@ -299,22 +459,22 @@ static FillResult fill_pcm_impl(
     return FillResult::FILLED;
 }
 
-static FillResult fill_input_buffer(AAudioStream* stream, void* buffer, int32_t numFrames) {
+static FillResult fill_input_buffer(AAudioStream* stream, void* buffer, int32_t numFrames, CapturePath path) {
     if (!stream) return FillResult::PASS;
     int32_t ch = AAudioStream_getChannelCount(stream);
     if (ch <= 0) ch = 1;
     int32_t sr = AAudioStream_getSampleRate(stream);
     if (sr <= 0) sr = 48'000;
     aaudio_format_t fmt = AAudioStream_getFormat(stream);
-    return fill_pcm_impl(buffer, fmt, ch, sr, numFrames);
+    return fill_pcm_impl(buffer, fmt, ch, sr, numFrames, path, stream);
 }
 
-// 导出给 OpenSL ES 路径用（见 glass_aaudio.h）。
-bool fill_pcm(void* buffer, SampleFmt sf, int32_t channels, int32_t sample_rate, int32_t frames) {
+// 导出给 OpenSL ES / AudioRecord 路径用
+bool fill_pcm(void* buffer, SampleFmt sf, int32_t channels, int32_t sample_rate, int32_t frames, CapturePath path, const void* stream_id) {
     aaudio_format_t fmt = (sf == SampleFmt::FLOAT)
         ? AAUDIO_FORMAT_PCM_FLOAT
         : AAUDIO_FORMAT_PCM_I16;
-    return fill_pcm_impl(buffer, fmt, channels, sample_rate, frames) == FillResult::FILLED;
+    return fill_pcm_impl(buffer, fmt, channels, sample_rate, frames, path, stream_id) == FillResult::FILLED;
 }
 
 // =================== 阻塞 read 路径 ===================
@@ -338,18 +498,17 @@ static aaudio_result_t my_AAudioStream_read(
         g_input_streams.insert(stream);
     }
 
-    if (fill_input_buffer(stream, buffer, numFrames) == FillResult::FILLED) {
-        return numFrames;
-    }
-    return g_orig_AAudioStream_read(stream, buffer, numFrames, timeoutNanos);
+    // 保留系统录音时钟、超时、短读和错误语义，只覆盖实际返回的帧。
+    // 否则紧循环会耗尽实时 PCM，并把大量补零帧发送给语音引擎。
+    const bool was_reading = aaudio_read_in_progress;
+    aaudio_read_in_progress = true;
+    const aaudio_result_t frames = g_orig_AAudioStream_read(stream, buffer, numFrames, timeoutNanos);
+    aaudio_read_in_progress = was_reading;
+    if (frames > 0) fill_input_buffer(stream, buffer, frames, CapturePath::AAUDIO_READ);
+    return frames;
 }
 
 // =================== data-callback 路径 ===================
-//
-// 抖音等使用 AAudio 的回调采集模式（AAudioStreamBuilder_setDataCallback +
-// LOW_LATENCY）。回调模式下数据由框架回调线程直接送进 app 的 callback，
-// 完全不经过 AAudioStream_read。我们 hook setDataCallback，把 app 的 callback
-// 包进 trampoline：在转交给 app 之前，把输入缓冲覆盖成虚拟音源。
 
 struct CbWrapper {
     AAudioStream_dataCallback orig_cb;
@@ -364,14 +523,13 @@ static aaudio_data_callback_result_t my_data_callback(
 ) {
     auto* w = static_cast<CbWrapper*>(userData);
 
-    // 仅对输入流改写；输出流（播放）原样转交。
     if (stream && audioData && numFrames > 0 &&
         AAudioStream_getDirection(stream) == AAUDIO_DIRECTION_INPUT) {
         {
             std::lock_guard<std::mutex> lock(g_streams_mutex);
             g_input_streams.insert(stream);
         }
-        fill_input_buffer(stream, audioData, numFrames);
+        fill_input_buffer(stream, audioData, numFrames, CapturePath::AAUDIO_CALLBACK);
     }
 
     if (w && w->orig_cb) {
@@ -385,16 +543,11 @@ static void my_setDataCallback(
     AAudioStream_dataCallback callback,
     void* userData
 ) {
-    // app 传 nullptr 表示改用阻塞 read 模式——必须原样转交，否则会被我们
-    // 误转成 callback 模式。
     if (callback == nullptr) {
         g_orig_setDataCallback(builder, nullptr, userData);
         return;
     }
 
-    // 每个录音会话分配一个 wrapper。wrapper 与 stream 生命周期绑定，但 AAudio
-    // 不暴露释放时机，这里故意不回收——每个流仅泄漏 sizeof(CbWrapper) 字节，
-    // 现实中录音流数量极少，可忽略；换取回调线程零锁、零竞争。
     auto* w = new CbWrapper{callback, userData};
     g_orig_setDataCallback(builder, &my_data_callback, w);
 }
@@ -420,7 +573,6 @@ bool install_aaudio_hook() {
     }
     LOGI("AAudioStream_read hook installed");
 
-    // data-callback 路径——失败不致命，阻塞 read 路径仍可用。
     g_setcb_hook_stub = shadowhook_hook_sym_name(
         "libaaudio.so",
         "AAudioStreamBuilder_setDataCallback",
@@ -435,48 +587,76 @@ bool install_aaudio_hook() {
         LOGI("AAudioStreamBuilder_setDataCallback hook installed");
     }
 
+    ensure_worker_started();
     return true;
 }
 
 void set_decision(Decision decision) {
-    g_decision.store(static_cast<int32_t>(decision), std::memory_order_relaxed);
+    // 相同决策的轮询无需争用音频缓冲锁。
+    if (g_decision.load(std::memory_order_relaxed) == static_cast<int32_t>(decision)) return;
+    int32_t new_d = static_cast<int32_t>(decision);
+    int32_t old_d;
+    {
+        std::lock_guard<std::mutex> lock(g_buffer_mutex);
+        old_d = g_decision.exchange(new_d, std::memory_order_relaxed);
+        if (old_d != new_d) {
+            g_ring_buffer.clear();
+            ++g_pcm_generation;
+        }
+    }
+    if (old_d != new_d) LOGI("decision changed %d -> %d, ring buffer cleared", old_d, new_d);
 }
 
 Decision get_decision() {
     return static_cast<Decision>(g_decision.load(std::memory_order_relaxed));
 }
 
+void note_capture(CapturePath path) {
+    g_last_path.store(static_cast<int32_t>(path), std::memory_order_relaxed);
+    g_pending_capture_reads.fetch_add(1, std::memory_order_relaxed);
+}
+
 void set_pcm_fd(int fd, int32_t sample_rate, int32_t channels) {
+    if (fd >= 0) {
+        const int flags = fcntl(fd, F_GETFL);
+        if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+            LOGW("cannot make PCM fd nonblocking: %s", strerror(errno));
+            ::close(fd);
+            fd = -1;
+        }
+    }
+    if (fd >= 0) {
+#if defined(F_SETPIPE_SZ)
+        int ret = fcntl(fd, F_SETPIPE_SZ, 8192);
+        if (ret < 0) {
+            LOGW("fcntl F_SETPIPE_SZ 8192 failed on fd=%d: %s", fd, strerror(errno));
+        } else {
+            LOGI("pipe buffer size resized to %d on fd=%d", ret, fd);
+        }
+#endif
+    }
+
     int old_fd = -1;
     {
         std::lock_guard<std::mutex> lock(g_fd_mutex);
-        old_fd = g_fd_state.fd;
-        g_fd_state.fd = fd;
-        g_fd_state.sample_rate = sample_rate;
-        g_fd_state.channels = channels > 0 ? channels : 1;
+        {
+            std::lock_guard<std::mutex> buffer_lock(g_buffer_mutex);
+            old_fd = g_fd_state.fd;
+            g_fd_state.fd = fd;
+            g_fd_state.sample_rate = sample_rate;
+            g_fd_state.channels = channels > 0 ? channels : 1;
+            g_ring_buffer.clear();
+            ++g_pcm_generation;
+        }
+        if (old_fd >= 0 && old_fd != fd) ::close(old_fd);
     }
-
-    if (old_fd >= 0 && old_fd != fd) {
-        ::close(old_fd);
-    }
-    LOGI("set_pcm_fd fd=%d sr=%d ch=%d", fd, sample_rate, channels);
+    ensure_worker_started();
+    LOGI("set_pcm_fd fd=%d sr=%d ch=%d (ring buffer cleared)", fd, sample_rate, channels);
 }
 
 bool has_pcm_fd() {
     std::lock_guard<std::mutex> lock(g_fd_mutex);
     return g_fd_state.fd >= 0;
-}
-
-void drain_stats(
-    uint64_t* out_reads,
-    uint64_t* out_bytes,
-    int32_t* out_last_sr,
-    int32_t* out_last_ch
-) {
-    if (out_reads) *out_reads = g_pending_reads.exchange(0, std::memory_order_relaxed);
-    if (out_bytes) *out_bytes = g_pending_bytes.exchange(0, std::memory_order_relaxed);
-    if (out_last_sr) *out_last_sr = g_last_sr.load(std::memory_order_relaxed);
-    if (out_last_ch) *out_last_ch = g_last_ch.load(std::memory_order_relaxed);
 }
 
 void force_release_audio_inputs() {
@@ -488,13 +668,39 @@ void force_release_audio_inputs() {
     }
     for (AAudioStream* stream : snapshot) {
         if (!stream) continue;
-        // 只 requestStop：流所有权在 App，close 容易 double-free。
+        // 只 requestStop：流所有权在 App，close 容易 double-free
         aaudio_result_t rc = AAudioStream_requestStop(stream);
         LOGI("AAudio force requestStop stream=%p rc=%d", stream, static_cast<int>(rc));
     }
     set_pcm_fd(-1, 0, 0);
     force_stop_opensl_recorders();
     LOGI("force_release_audio_inputs aaudio=%zu", snapshot.size());
+}
+
+void drain_stats(
+    uint64_t* out_reads,
+    uint64_t* out_bytes,
+    int32_t* out_last_sr,
+    int32_t* out_last_ch,
+    uint64_t* out_underruns,
+    uint64_t* out_missing_frames,
+    uint64_t* out_requested_frames,
+    int32_t* out_path,
+    uint64_t* out_skipped_source_frames,
+    uint64_t* out_capture_reads
+) {
+    if (out_reads) *out_reads = g_pending_reads.exchange(0, std::memory_order_relaxed);
+    if (out_bytes) *out_bytes = g_pending_bytes.exchange(0, std::memory_order_relaxed);
+    if (out_last_sr) *out_last_sr = g_last_sr.load(std::memory_order_relaxed);
+    if (out_last_ch) *out_last_ch = g_last_ch.load(std::memory_order_relaxed);
+    if (out_underruns) *out_underruns = g_pending_underruns.exchange(0, std::memory_order_relaxed);
+    if (out_missing_frames) *out_missing_frames = g_pending_missing_frames.exchange(0, std::memory_order_relaxed);
+    if (out_requested_frames) *out_requested_frames = g_pending_requested_frames.exchange(0, std::memory_order_relaxed);
+    if (out_path) *out_path = g_last_path.load(std::memory_order_relaxed);
+    const auto skipped = g_pending_skipped_source_frames.exchange(0, std::memory_order_relaxed);
+    if (out_skipped_source_frames) *out_skipped_source_frames = skipped;
+    const auto captures = g_pending_capture_reads.exchange(0, std::memory_order_relaxed);
+    if (out_capture_reads) *out_capture_reads = captures;
 }
 
 } // namespace glass

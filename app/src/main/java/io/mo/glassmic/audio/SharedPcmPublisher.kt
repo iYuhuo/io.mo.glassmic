@@ -92,6 +92,8 @@ class SharedPcmPublisher @Inject constructor(
         const val BYTES_PER_SAMPLE = 2
         const val MASTER_SAMPLE_RATE = 48_000
         const val MASTER_CHANNELS = 1
+        /** 20ms @ 48kHz mono PCM16；匀速小切片推流，降低管道突发抖动 */
+        const val FRAME_CHUNK_BYTES = 1920
         const val NOISE_SIM_AMPLITUDE = 6_000
         const val HIGH_GAIN_MULTIPLIER = 1.8f
         const val REVERB_DELAY_SAMPLES = 2_880   // 60ms @48k 单声道
@@ -318,7 +320,12 @@ class SharedPcmPublisher @Inject constructor(
             writerStarted = true
         }
         scope.launch {
-            val frame = ByteBuffer.allocate(4096)
+            // 与上游一致：推流线程提升到 URGENT_AUDIO，减小游戏高负载时被抢占导致的欠载。
+            runCatching {
+                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO)
+            }
+            // 20ms @ 48kHz mono PCM16；比 4096 大包更平滑，降低突发抖动。
+            val frame = ByteBuffer.allocate(FRAME_CHUNK_BYTES)
             // 用时间戳维持实时节奏，避免每帧 delay 累计误差
             var nextSendAt = System.currentTimeMillis()
             while (isActive) {
@@ -496,7 +503,7 @@ class SharedPcmPublisher @Inject constructor(
     private fun ensureIndependentMonitorPump() {
         if (monitorPumpJob?.isActive == true) return
         monitorPumpJob = scope.launch {
-            val frame = ByteBuffer.allocate(4096)
+            val frame = ByteBuffer.allocate(FRAME_CHUNK_BYTES)
             var nextSendAt = System.currentTimeMillis()
             val bytesPerSec = MASTER_SAMPLE_RATE.toLong() * MASTER_CHANNELS * BYTES_PER_SAMPLE
             while (isActive && monitorEnabled) {

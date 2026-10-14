@@ -15,7 +15,7 @@ namespace glass {
  */
 bool install_opensl_hook();
 
-/** 对本进程跟踪到的 OpenSL AudioRecorder 执行 SetRecordState(STOPPED)。 */
+/** 停止本进程已跟踪的 OpenSL 录音器（供一键解除麦占用）。 */
 void force_stop_opensl_recorders();
 
 } // namespace glass
