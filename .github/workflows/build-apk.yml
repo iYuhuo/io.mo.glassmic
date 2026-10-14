@@ -55,49 +55,20 @@ jobs:
           java -cp "$classpath" AudioRegression
           java -cp "$classpath" TapTimingRegression
 
-      - name: 整理产物（可选正式签名）
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      - name: 整理产物（debug / release 同一签名）
         run: |
           set -euo pipefail
           version=$(python3 -c 'import json; print(json.load(open("app/build/outputs/apk/release/output-metadata.json"))["elements"][0]["versionName"])')
           version_code=$(python3 -c 'import json; print(json.load(open("app/build/outputs/apk/release/output-metadata.json"))["elements"][0]["versionCode"])')
-          tools="$ANDROID_HOME/build-tools/36.0.0"
           mkdir -p dist
+          # Gradle 已用 debug keystore 同时签 debug 与 release，可直接覆盖安装
           cp app/build/outputs/apk/debug/app-debug.apk "dist/yuhuo-$version-debug.apk"
-
-          if [ -n "${ANDROID_KEYSTORE_BASE64:-}" ] && [ -n "${ANDROID_KEYSTORE_PASSWORD:-}" ] \
-            && [ -n "${ANDROID_KEY_ALIAS:-}" ] && [ -n "${ANDROID_KEY_PASSWORD:-}" ]; then
-            umask 077
-            keystore=$(mktemp "$RUNNER_TEMP/yuhuo-signing-XXXXXX")
-            trap 'rm -f "$keystore"' EXIT
-            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore"
-            apk="dist/yuhuo-$version-release.apk"
-            "$tools/zipalign" -P 16 -f 4 app/build/outputs/apk/release/app-release-unsigned.apk "$RUNNER_TEMP/yuhuo-aligned.apk"
-            "$tools/apksigner" sign \
-              --ks "$keystore" \
-              --ks-key-alias "$ANDROID_KEY_ALIAS" \
-              --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
-              --key-pass env:ANDROID_KEY_PASSWORD \
-              --v4-signing-enabled false \
-              --out "$apk" \
-              "$RUNNER_TEMP/yuhuo-aligned.apk"
-            "$tools/apksigner" verify --verbose --print-certs "$apk" > dist/signature.txt
-            "$tools/zipalign" -c -P 16 4 "$apk"
-            (cd dist && sha256sum "yuhuo-$version-release.apk" "yuhuo-$version-debug.apk" > SHA256SUMS.txt)
-            echo "signed=true" >> "$GITHUB_STEP_SUMMARY"
-          else
-            cp app/build/outputs/apk/release/app-release-unsigned.apk "dist/yuhuo-$version-release-unsigned.apk"
-            (cd dist && sha256sum "yuhuo-$version-debug.apk" "yuhuo-$version-release-unsigned.apk" > SHA256SUMS.txt)
-            echo "signed=false (missing ANDROID_KEYSTORE_* secrets; uploaded debug + unsigned release)" >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-          printf 'versionName=%s\nversionCode=%s\ncommit=%s\nworkflow=%s/%s/actions/runs/%s\n' \
+          cp app/build/outputs/apk/release/app-release.apk "dist/yuhuo-$version-release.apk"
+          (cd dist && sha256sum "yuhuo-$version-debug.apk" "yuhuo-$version-release.apk" > SHA256SUMS.txt)
+          printf 'versionName=%s\nversionCode=%s\nsigning=debug-keystore\ncommit=%s\nworkflow=%s/%s/actions/runs/%s\n' \
             "$version" "$version_code" "$GITHUB_SHA" \
             "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" > dist/build-info.txt
+          echo "debug/release both signed with Android debug keystore" >> "$GITHUB_STEP_SUMMARY"
 
       - name: 上传安装包与校验值
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
