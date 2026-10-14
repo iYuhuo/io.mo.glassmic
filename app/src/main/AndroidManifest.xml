@@ -1,0 +1,162 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- 录音 + 麦克风（FGS 类型需要） -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!-- 无 RECORD_AUDIO 时前台服务降级到 specialUse 类型，需要此权限 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+    <!-- 通知 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- 悬浮窗 -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <!-- 文件访问（Android 13+ 分桶） -->
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+
+    <!-- 启动时唤醒 + Boot 完成（只用于清理状态，不自动启服务） -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- 查询已安装应用（App 选择页） -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
+        tools:ignore="QueryAllPackagesPermission" />
+
+    <!-- 仅供可选的「AI 在线 TTS」使用；系统 TTS 与虚拟麦克风核心功能均离线，不联网 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+        </intent>
+        <!-- 文字转语音引擎（TTS → 虚拟麦克风） -->
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+
+    <application
+        android:name=".GlassApplication"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:description="@string/xposed_description"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:localeConfig="@xml/locales_config"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Yuhuo"
+        tools:targetApi="35">
+
+        <!-- legacy Xposed API 82 识别信息；API 101 会忽略这些 metadata -->
+        <meta-data
+            android:name="xposedmodule"
+            android:value="true" />
+        <meta-data
+            android:name="xposeddescription"
+            android:value="@string/xposed_description" />
+        <meta-data
+            android:name="xposedminversion"
+            android:value="82" />
+
+        <!-- ============ 主 Activity ============ -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:configChanges="uiMode|screenSize|orientation|smallestScreenSize|density|keyboard|keyboardHidden|navigation"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- ============ 前台服务（含常驻通知） ============ -->
+        <!-- 同时声明 microphone 与 specialUse：有 RECORD_AUDIO 时用 microphone，
+             否则降级到 specialUse，避免无权限时 microphone 类型校验崩溃。 -->
+        <service
+            android:name=".service.GlassForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="microphone|specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="virtual_mic_audio_bridge" />
+        </service>
+
+        <!-- ============ 悬浮窗服务 ============ -->
+        <service
+            android:name=".service.FloatingWindowService"
+            android:exported="false" />
+
+        <!-- ============ 实时波形悬浮窗服务 ============ -->
+        <service
+            android:name=".service.WaveformOverlayService"
+            android:exported="false" />
+
+        <!-- ============ 快捷设置磁贴（主开关） ============ -->
+        <service
+            android:name=".service.GlassTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_notification"
+            android:label="@string/tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <!-- ============ 启动广播（仅用于清理 enabled_for_boot） ============ -->
+        <receiver
+            android:name=".service.BootReceiver"
+            android:exported="true"
+            android:enabled="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- ============ 运行态 / PCM Provider ============ -->
+        <provider
+            android:name=".provider.RuntimeProvider"
+            android:authorities="io.mo.glassmic.provider.runtime"
+            android:exported="true"
+            android:grantUriPermissions="true" />
+
+        <provider
+            android:name=".provider.PcmStreamProvider"
+            android:authorities="io.mo.glassmic.provider.pcm"
+            android:exported="true"
+            android:grantUriPermissions="true" />
+
+        <!-- ============ 诊断包分享 FileProvider ============ -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="io.mo.glassmic.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+        <!-- 让 AppCompatDelegate.setApplicationLocales() 的语言选择与系统 LocaleManager 同步/持久化
+             （Android 13 以下必须声明此项，否则应用内切换语言不会真正生效或无法在重启后保留） -->
+        <service
+            android:name="androidx.appcompat.app.AppLocalesMetadataHolderService"
+            android:enabled="false"
+            android:exported="false">
+            <meta-data
+                android:name="autoStoreLocales"
+                android:value="true" />
+        </service>
+
+    </application>
+
+</manifest>

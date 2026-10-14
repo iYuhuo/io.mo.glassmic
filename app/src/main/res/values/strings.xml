@@ -1,0 +1,311 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- App 基础 -->
+    <string name="app_name">yuhuo</string>
+    <string name="xposed_description">yuhuo - 虚拟麦克风测试模块</string>
+
+    <!-- 常驻通知（不可隐藏） -->
+    <string name="notif_channel_name">虚拟麦克风状态</string>
+    <string name="notif_channel_desc">显示虚拟麦克风运行状态的常驻通知，开启时无法隐藏。</string>
+    <string name="notif_title">yuhuo</string>
+    <string name="notif_text">虚拟麦克风使用中</string>
+
+    <!-- 首次启动 -->
+    <string name="onboarding_disclaimer_title">免责声明</string>
+    <string name="onboarding_disclaimer_body">
+        yuhuo 是一个面向 Root 与 LSPosed 用户的开源虚拟麦克风与音频链路测试工具。\n\n
+        本工具仅用于用户本人设备上的音频链路测试、开发调试、兼容性验证和合法辅助场景。开启后，模块会显示常驻通知，并在设备重启后默认关闭虚拟麦克风功能。\n\n
+        请勿将本工具用于冒充他人、欺骗通话、干扰他人、规避平台规则、侵犯隐私或其他违法违规场景。因不当使用导致的后果由使用者自行承担。\n\n
+        实验功能仅用于本机音频测试，请勿用于制造刺耳声音、骚扰他人或破坏他人正常使用体验。
+    </string>
+    <string name="onboarding_disclaimer_agree">我已阅读并理解以上内容，并承诺仅在合法、透明、可控的场景中使用本工具。</string>
+    <string name="onboarding_continue">继续</string>
+    <string name="onboarding_retry">重新检测</string>
+    <string name="onboarding_grant">去授权</string>
+
+    <string name="perm_root_title">Root 授权</string>
+    <string name="perm_root_hint">请在 Magisk / KernelSU 管理器中授予 yuhuo Root 权限。</string>
+    <string name="perm_notif_title">通知权限</string>
+    <string name="perm_notif_hint">虚拟麦克风开启时必须显示常驻通知。如关闭通知则无法使用核心功能。</string>
+    <string name="perm_overlay_title">悬浮窗权限</string>
+    <string name="perm_overlay_hint">用于显示控制悬浮窗。未授权时将回退到通知 + 主界面控制。</string>
+    <string name="perm_file_title">音频文件访问</string>
+    <string name="perm_file_hint">用于导入并读取你选择的本地音频文件。</string>
+    <string name="perm_fgs_title">前台服务能力</string>
+    <string name="perm_fgs_hint">用于维持运行态与常驻通知。</string>
+    <string name="perm_safemode_title">安全模式状态</string>
+    <string name="perm_safemode_hint">检测上次是否异常退出。</string>
+
+    <!-- 状态 -->
+    <string name="status_running">yuhuo 正在运行</string>
+    <string name="status_off">yuhuo 已关闭</string>
+    <string name="status_using_real">当前使用真实麦克风</string>
+    <string name="status_using_virtual">虚拟麦克风使用中</string>
+
+    <!-- 快捷设置磁贴 -->
+    <string name="tile_label">yuhuo</string>
+
+    <!-- 主页 -->
+    <string name="home_pick_audio">选择音频</string>
+    <string name="home_open_floating">打开悬浮窗</string>
+    <string name="home_restore_mic">恢复真实麦克风</string>
+    <string name="home_field_source">音源</string>
+    <string name="home_field_group">片段组</string>
+    <string name="home_field_policy">策略</string>
+    <string name="home_field_scope">范围</string>
+    <string name="home_field_floating">悬浮窗</string>
+    <string name="home_field_hook">Xposed 注入</string>
+    <string name="home_field_intercept">劫持统计</string>
+    <string name="hook_status_never">未检测到（请确认模块已启用并重启设备）</string>
+    <string name="hook_status_active">活跃</string>
+    <string name="hook_status_stale">已加载（无近期录音事件）</string>
+    <string name="intercept_none">还没拦截到任何 AudioRecord 调用</string>
+    <string name="intercept_summary">已劫持 %1$d 次 / %2$s</string>
+    <string name="source_real_mic">真实麦克风</string>
+    <string name="source_silence">静音</string>
+    <string name="source_tts">文字转语音</string>
+    <string name="home_policy_silence">静音</string>
+    <string name="home_scope_whitelist_count">白名单（%1$d）</string>
+
+    <!-- 安全模式 -->
+    <string name="safe_mode_title">yuhuo 已进入安全模式</string>
+    <string name="safe_mode_subtitle">虚拟麦克风功能已停止</string>
+    <string name="safe_mode_exit">退出安全模式</string>
+    <string name="safe_mode_export_diag">导出诊断包</string>
+    <string name="safe_mode_exit_confirm">退出安全模式后，你可以重新开启 yuhuo。若问题重复出现，请导出诊断包并反馈。</string>
+
+    <!-- 作用域 -->
+    <string name="scope_title">生效范围</string>
+    <string name="scope_mode_global">全系统</string>
+    <string name="scope_mode_global_hint">对作用域内所有 App 生效（不做包名过滤）</string>
+    <string name="scope_mode_whitelist">白名单</string>
+    <string name="scope_mode_whitelist_hint">仅清单内勾选的 App 生效</string>
+    <string name="scope_native_warn">注：模块只能注入到 LSPosed 作用域内的 App 进程；audioserver 等 native daemon 与走 NDK AAudio 的 App 不在覆盖范围内。</string>
+    <string name="scope_lsposed_alert_title">⚠️ 这里设置的是 App 内过滤，不是 LSPosed 注入开关</string>
+    <string name="scope_lsposed_alert_body">无论这里选「全系统」还是「白名单」，模块**先要被 LSPosed 注入到目标 App 进程**才能生效。\n\n如果你发现微信 / 抖音等 App 没效果：\n1. 打开「LSPosed 管理器」\n2. 模块 → yuhuo → 作用域\n3. 勾选你要劫持的 App\n4. 强制停止那个 App 再重新打开</string>
+    <string name="scope_open_lsposed">打开 LSPosed 管理器</string>
+    <string name="scope_open_lsposed_failed">未找到 LSPosed 管理器</string>
+    <string name="scope_show_system_apps">显示系统应用</string>
+    <string name="scope_search_hint">搜索 App 名称或包名</string>
+    <string name="scope_loading">加载已安装 App…</string>
+    <string name="scope_empty">没有匹配的应用</string>
+    <string name="scope_selected_count">已选 %d 个</string>
+
+    <!-- 音频库 -->
+    <string name="library_title">音频库</string>
+    <string name="library_import">导入音频</string>
+    <string name="library_new_group">新建片段组</string>
+    <string name="library_empty_groups">还没有片段组，先新建一个</string>
+    <string name="library_empty_clips">该组还没有音频，点击下方按钮导入</string>
+    <string name="library_select_a_group">先选择或新建一个片段组</string>
+    <string name="library_preview">试听</string>
+    <string name="library_preview_stop">停止试听</string>
+    <string name="library_delete">删除</string>
+    <string name="library_rename">重命名</string>
+    <string name="library_change_emoji">更换图标</string>
+    <string name="library_change_policy">修改播放策略</string>
+    <string name="library_policy_follow_global">跟随全局</string>
+    <string name="library_policy_silence">播完静音</string>
+    <string name="library_policy_loop">循环</string>
+    <string name="library_policy_real_mic">切回真实麦克风</string>
+    <string name="library_group_name_hint">片段组名称</string>
+    <string name="library_clip_name_hint">音频名称</string>
+    <string name="library_delete_group_confirm">删除该组将同时删除组内所有音频。是否继续？</string>
+    <string name="library_delete_clip_confirm">确认删除该音频？</string>
+    <string name="library_cancel">取消</string>
+    <string name="library_confirm">确认</string>
+    <string name="library_current_marker">当前音源</string>
+    <string name="library_import_failed">导入失败</string>
+
+    <!-- 设置页 -->
+    <string name="settings_title">设置</string>
+    <string name="settings_section_appearance">外观</string>
+    <string name="settings_theme">主题</string>
+    <string name="settings_theme_follow">跟随系统</string>
+    <string name="settings_theme_light">浅色</string>
+    <string name="settings_theme_dark">深色</string>
+    <string name="settings_language">语言</string>
+    <string name="settings_language_follow">跟随系统</string>
+    <string name="settings_language_zh">简体中文</string>
+    <string name="settings_language_en">English</string>
+    <string name="settings_glass_effect">液态玻璃</string>
+    <string name="settings_glass_effect_hint">关闭可降低功耗</string>
+    <string name="settings_reduce_motion">减少动画</string>
+
+    <string name="settings_section_tile">快捷磁贴</string>
+    <string name="settings_tile_add">添加到快捷设置</string>
+    <string name="settings_tile_add_hint">把 yuhuo 开关磁贴添加到系统下拉快捷设置面板</string>
+    <string name="settings_tile_added">磁贴已添加</string>
+
+    <string name="settings_section_floating">悬浮窗</string>
+    <string name="settings_floating_enabled">允许悬浮窗</string>
+    <string name="settings_floating_enabled_hint">主开关开启后才会显示</string>
+    <string name="settings_floating_opacity">不透明度</string>
+    <string name="settings_floating_size">悬浮球大小</string>
+    <string name="settings_floating_size_small">小</string>
+    <string name="settings_floating_size_standard">标准</string>
+    <string name="settings_floating_size_large">大</string>
+    <string name="settings_floating_icon">悬浮球图标</string>
+    <string name="settings_floating_icon_hint">自定义悬浮球图标，留空使用默认</string>
+    <string name="settings_floating_icon_pick">选择图片</string>
+    <string name="settings_floating_icon_reset">恢复默认</string>
+    <string name="settings_floating_icon_error">图标导入失败</string>
+    <string name="settings_waveform_enabled">实时波形显示</string>
+    <string name="settings_waveform_enabled_hint">开启后弹出独立的实时波形悬浮窗</string>
+    <string name="settings_waveform_opacity">波形透明度</string>
+
+    <string name="settings_section_policy">默认播放策略</string>
+    <string name="settings_policy_hint">片段组未单独设置时使用</string>
+
+    <string name="settings_section_hook">Xposed 注入状态</string>
+    <string name="settings_hook_refresh">刷新</string>
+    <string name="settings_hook_never_long">还没有任何 App 触发过 yuhuo 的录音钩子。请确认：\n1) 在 LSPosed 中已启用本模块\n2) 重启过设备\n3) 测试 App 在 LSPosed 作用域内</string>
+    <string name="settings_hook_active_long">最近 5 分钟内有 App 触发过录音钩子，注入正常。</string>
+    <string name="settings_hook_stale_long">曾经收到过录音钩子调用，但最近 5 分钟无新事件。模块可能仍然加载，只是没 App 在录音。</string>
+
+    <string name="settings_section_diag">诊断与日志</string>
+    <string name="settings_log_level">日志级别</string>
+    <string name="settings_log_off">关闭</string>
+    <string name="settings_log_basic">基础</string>
+    <string name="settings_log_verbose">详细</string>
+    <string name="settings_log_debug">调试</string>
+    <string name="settings_export_diag">导出诊断包</string>
+    <string name="settings_clear_log">清空内存日志</string>
+    <string name="settings_pipeline_probe">测试音频管线（本地）</string>
+    <string name="settings_pipeline_probe_hint">本地打开 PCM 通道读 1 秒，判断 App 侧管线是否通</string>
+    <string name="settings_section_intercept">劫持统计</string>
+    <string name="settings_intercept_reset">清零</string>
+    <string name="settings_intercept_total_reads">已劫持次数</string>
+    <string name="settings_intercept_total_bytes">已劫持字节</string>
+    <string name="settings_intercept_last">最近劫持时间</string>
+    <string name="settings_intercept_last_pkg">最近调用方</string>
+    <string name="settings_intercept_format">采样率 / 声道</string>
+
+    <string name="settings_section_compat">兼容性</string>
+    <string name="settings_visibility_compat">严格 ROM 兼容模式</string>
+    <string name="settings_visibility_compat_hint">无效果时打开，会请求 Root 授权，授权后重启手机生效。</string>
+
+    <string name="settings_section_experimental">实验功能</string>
+    <string name="settings_experimental_unlock">解锁实验功能</string>
+    <string name="settings_experimental_unlock_hint">仅用于本机音频链路测试</string>
+    <string name="settings_exp_stress">音频压力测试</string>
+    <string name="settings_exp_high_gain">高增益</string>
+    <string name="settings_exp_noise">噪声环境模拟</string>
+    <string name="settings_exp_limiter">自动限幅保护</string>
+    <string name="settings_exp_limiter_hint">关闭可能导致削波，强烈建议保留</string>
+    <string name="settings_exp_reverb">混响</string>
+    <string name="settings_exp_reverb_hint">为音源叠加空间回声</string>
+    <string name="settings_exp_reverb_amount">混响强度</string>
+    <string name="settings_exp_speed">变速</string>
+    <string name="settings_exp_speed_hint">改变播放速度</string>
+    <string name="settings_exp_speed_factor">播放速度</string>
+
+    <string name="settings_section_about">关于</string>
+    <string name="settings_about_version">版本</string>
+    <string name="settings_about_license">开源协议</string>
+    <string name="settings_about_repo">项目仓库</string>
+
+    <!-- 通用 -->
+    <string name="common_back">返回</string>
+
+    <!-- 设置页 → 语音合成 -->
+    <string name="settings_section_ai_tts">语音合成</string>
+    <string name="ai_tts_title">语音合成引擎</string>
+    <string name="ai_tts_nav_enabled">在线 AI · %1$s</string>
+    <string name="ai_tts_nav_disabled">系统 TTS（本地 / MultiTTS）</string>
+
+    <!-- AI 供应商（TTS）配置页 -->
+    <string name="ai_tts_section_access">引擎选择</string>
+    <string name="ai_tts_enable">启用 AI TTS</string>
+    <string name="ai_tts_mode_label">当前使用</string>
+    <string name="ai_tts_mode_system">系统 TTS（本地，跟随系统默认引擎，如 MultiTTS）</string>
+    <string name="ai_tts_mode_online">在线 AI TTS</string>
+    <string name="ai_tts_mode_hint">切换引擎不会清除下方在线配置；选「系统 TTS」时用手机默认引擎合成。</string>
+    <string name="ai_tts_protocol">接口协议</string>
+    <string name="ai_tts_provider_openai">OpenAI（/audio/speech）</string>
+    <string name="ai_tts_provider_gemini">Google Gemini（generateContent）</string>
+    <string name="ai_tts_provider_mimo">小米 MiMo（chat/completions）</string>
+    <string name="ai_tts_section_endpoint">接口</string>
+    <string name="ai_tts_endpoint_hint">自定义地址 endpoint（留空用官方默认）</string>
+    <string name="ai_tts_api_key">API Key</string>
+    <string name="ai_tts_model_hint">自定义模型 model（留空用默认）</string>
+    <string name="ai_tts_fetch_models">获取模型</string>
+    <string name="ai_tts_fetching_models">获取中…</string>
+    <string name="ai_tts_models_count">共 %1$d 个，点此重选</string>
+    <string name="ai_tts_section_voice">音色</string>
+    <string name="ai_tts_voice_hint">音色 voice（preset / OpenAI / Gemini）</string>
+    <string name="ai_tts_mimo_advanced">MiMo 进阶：模型填 -voicedesign 用文本描述定制音色（写在下方描述框）；填 -voiceclone 复刻音色（选一段 ≤60 秒、≤5MB 的参考音频）。</string>
+    <string name="ai_tts_style_prompt_hint">音色描述 / 风格（voicedesign 必填，preset 可选）</string>
+    <string name="ai_tts_mimo_optimize_text_preview">优化文本（optimize_text_preview）</string>
+    <string name="ai_tts_mimo_optimize_text_preview_hint">voicedesign 模式下允许 AI 预处理/改写输入文本</string>
+    <string name="ai_tts_clone_sample">参考音频（voiceclone）</string>
+    <string name="ai_tts_clone_sample_selected">已选择样本（≤60 秒 / ≤5MB）</string>
+    <string name="ai_tts_clone_sample_none">未选择——复刻音色需先选一段音频样本</string>
+    <string name="ai_tts_clear">清除</string>
+    <string name="ai_tts_choose_audio">选择音频</string>
+    <string name="ai_tts_format_hint">返回格式 format（OpenAI：wav / pcm）</string>
+    <string name="ai_tts_section_test">测试与试听</string>
+    <string name="ai_tts_test_connection">测试连接</string>
+    <string name="ai_tts_testing">测试中…</string>
+    <string name="ai_tts_preview_text_label">试听文本</string>
+    <string name="ai_tts_preview_default_text">你好，这是一段用于试听的示例文本。</string>
+    <string name="ai_tts_generate">生成</string>
+    <string name="ai_tts_generating">生成中…</string>
+    <string name="ai_tts_preview_play">效果试听</string>
+    <string name="ai_tts_preview_playing">播放中…</string>
+    <string name="ai_tts_save_audio">保存音频</string>
+
+    <!-- AI 供应商（TTS）动态消息 -->
+    <string name="ai_tts_connected_ok">连接成功，收到 %1$d KB 音频</string>
+    <string name="ai_tts_test_timeout">测试超时（25 秒）</string>
+    <string name="ai_tts_test_phrase">这是一段连接测试。</string>
+    <string name="ai_tts_no_models_returned">接口未返回模型</string>
+    <string name="ai_tts_fetch_models_failed">获取失败</string>
+    <string name="ai_tts_enter_preview_text">请先输入试听文本</string>
+    <string name="ai_tts_no_audio_received">未获取到音频</string>
+    <string name="ai_tts_generate_first">请先点「生成」</string>
+    <string name="ai_tts_generate_audio_first">请先生成音频</string>
+    <string name="ai_tts_saved">已保存音频</string>
+    <string name="ai_tts_save_failed">保存失败</string>
+
+    <!-- 悬浮窗内容（运行时 UI，非设置项） -->
+    <string name="float_change_source">换音源</string>
+    <string name="float_collapse">收起</string>
+    <string name="float_back">返回</string>
+    <string name="float_no_groups">还没有音频分组</string>
+    <string name="float_no_clips_in_group">该分组还没有音频</string>
+    <string name="float_tab_tts">🗣 文字转语音</string>
+    <string name="float_tab_library">🎵 虚拟音源</string>
+    <string name="float_current">当前</string>
+    <string name="float_settings">设置</string>
+    <string name="float_tts_input_hint">输入要合成的文字，先生成再播放</string>
+    <string name="float_tts_generating">生成中…</string>
+    <string name="float_tts_generate">生成</string>
+    <string name="float_tts_play">播放</string>
+    <string name="float_tts_generate_failed">生成失败，请检查网络或 TTS 引擎后重试</string>
+    <string name="float_tts_settings_title">文字转语音设置</string>
+    <string name="float_tts_progress_bar">播放进度条</string>
+    <string name="float_tts_policy">播完后</string>
+    <string name="float_tts_policy_hint">仅作用于文字转语音。默认切回真麦，可继续正常说话</string>
+    <string name="float_tts_policy_mic">真麦</string>
+    <string name="float_tts_delay">延时播放</string>
+    <string name="float_tts_delay_hint">点「播放」后延后出声，留出切到目标 App 的时间</string>
+    <string name="float_tts_delay_off">关</string>
+    <string name="float_tts_delay_seconds">%1$ss</string>
+    <string name="float_tts_delay_custom">自定义</string>
+    <string name="float_tts_delay_custom_hint">如 1.5</string>
+    <string name="float_tts_delay_unit">秒</string>
+    <string name="float_tts_delay_range">请输入 0 到 %1$d 之间的秒数</string>
+    <string name="float_tts_delay_countdown">%1$ss 取消</string>
+
+    <string name="float_local_monitor">本地监听</string>
+    <string name="float_output_volume">输出音量</string>
+    <string name="float_release_mic">解除占用并禁录</string>
+    <string name="float_release_mic_restore">恢复录音</string>
+    <string name="float_release_mic_done">已请求解除麦克风占用</string>
+    <string name="float_release_mic_scoped_blocked">已解除占用并持续禁录，再次点击可恢复</string>
+    <string name="float_release_mic_restored">已恢复录音</string>
+    <string name="float_release_mic_root_failed">操作失败，请确认已授予 Root</string>
+    <string name="float_release_mic_cooldown">请勿连点，%1$d 秒后再试</string>
+    <string name="float_release_mic_busy">正在处理，请稍候</string>
+</resources>
