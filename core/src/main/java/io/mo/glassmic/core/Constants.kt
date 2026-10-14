@@ -2,8 +2,8 @@ package io.mo.glassmic.core
 
 object Constants {
     const val APP_PACKAGE = "io.mo.glassmic"
-    const val APP_NAME = "yuhuo"
-    const val APP_NAME_ZH = "yuhuo"
+    const val APP_NAME = "GlassMic"
+    const val APP_NAME_ZH = "璃麦"
 
     // 旧版共享配置名；当前 Xposed 侧优先通过 RuntimeProvider 实时查询
     const val XSHARED_PREFS_NAME = "glassmic_shared"
@@ -13,6 +13,7 @@ object Constants {
     const val XPOSED_STATUS_LAST_PING = "last_ping"
     const val XPOSED_STATUS_LAST_PACKAGE = "last_package"
     const val XPOSED_STATUS_API = "api"
+    const val XPOSED_STATUS_PACKAGES = "package_states"
     const val METHOD_XPOSED_PING = "xposed_ping"
 
     // AudioRecord 拦截统计：由 Xposed 进程周期写入，App 进程读取展示
@@ -23,18 +24,12 @@ object Constants {
     const val AUDIO_STATS_LAST_PACKAGE = "last_package"
     const val AUDIO_STATS_LAST_SAMPLE_RATE = "last_sample_rate"
     const val AUDIO_STATS_LAST_CHANNELS = "last_channels"
+    const val AUDIO_STATS_NATIVE_DIAGNOSTICS = "native_diagnostics"
+    const val AUDIO_STATS_PCM_DIAGNOSTICS = "pcm_read_diagnostics"
+    const val AUDIO_STATS_TIMELINE = "audio_diagnostic_timeline"
+    const val METHOD_PCM_READ_STATS = "pcm_read_stats"
     const val METHOD_AUDIO_INTERCEPT = "audio_intercept"
-
-    /** 查询当前「强制解除麦克风占用」序号（hook 进程轮询 / ContentObserver 用） */
-    const val METHOD_FORCE_RELEASE_TOKEN = "force_release_token"
-    const val KEY_FORCE_RELEASE_TOKEN = "token"
-    const val KEY_IN_SCOPE = "in_scope"
-    const val KEY_RECORDING_BLOCK_UNTIL = "recording_block_until"
-    /**
-     * 持续禁录哨兵值：`recordingBlockUntilMs` 取此值表示直到用户再次点击才解除。
-     * Hook 侧用 `now < blockUntil` 判断，墙钟永远到不了 [Long.MAX_VALUE]。
-     */
-    const val MIC_RELEASE_BLOCK_INDEFINITE_UNTIL = Long.MAX_VALUE
+    const val METHOD_AUDIO_DIAG_EVENT = "audio_diag_event"
 
     // ContentProvider authorities
     const val PROVIDER_RUNTIME = "io.mo.glassmic.provider.runtime"
@@ -67,6 +62,37 @@ object Constants {
     // 模块 remote preferences（App 用 MODE_WORLD_READABLE 写、system_server 只读）
     const val REMOTE_PREFS = "glassmic_remote"
     const val KEY_VISIBILITY_COMPAT = "visibility_compat"
+    // system_server 只对这些 GlassMic 目标应用解除本模块的包可见性过滤。
+    // 该集合与 App 内白名单同步；未命中的调用方保持系统/HMA 原始过滤结果。
+    const val KEY_VISIBILITY_ALLOWLIST = "visibility_allowlist"
     // 调试/高级用户用的 system property 覆盖（重启失效，仅便于排查）
     const val PROP_VISIBILITY_COMPAT = "persist.sys.glassmic_vis"
+
+    // ============ 音量键快捷操作 ============
+    // 悬浮窗开着时：双击音量上键=播放，双击音量下键=暂停。
+    // 键事件只能在 system_server 的 PhoneWindowManager 里拿到，因此由 Xposed 侧检测、
+    // 广播回 App 侧执行。两侧的"握手"走同一份 remote preferences：
+    //
+    //  - App 写 [KEY_VOLUME_SHORTCUT_ARMED]：= 设置开关打开 && 悬浮窗正在运行。
+    //    只有为 true 时 system_server 侧才会去拦音量键——悬浮窗没开时音量键行为
+    //    与未装模块完全一致，把误伤面压到最小。
+    //  - App 每次 arm 时刷新 [KEY_VOLUME_SHORTCUT_TOKEN]，模块把它带在广播里回传，
+    //    App 侧核对后才执行；防止第三方 App 伪造广播遥控播放。
+    const val KEY_VOLUME_SHORTCUT_ARMED = "volume_shortcut_armed"
+    const val KEY_VOLUME_SHORTCUT_TOKEN = "volume_shortcut_token"
+
+    const val ACTION_VOLUME_SHORTCUT = "io.mo.glassmic.action.VOLUME_SHORTCUT"
+    const val EXTRA_SHORTCUT_ACTION = "shortcut_action"
+    const val EXTRA_SHORTCUT_TOKEN = "shortcut_token"
+    const val SHORTCUT_PLAY = "play"
+    const val SHORTCUT_PAUSE = "pause"
+
+    /**
+     * 双击判定窗口。
+     *
+     * 代价说明：为了做到"双击后音量不变"，第一次按键必须先扣住不放行——只有等这段时间
+     * 内没等到第二次按键，才把音量调整补上。所以 armed 期间单次调音量会晚这么久生效。
+     * 280ms 是"双击不费劲"与"调音量不明显发涩"之间的折中。
+     */
+    const val VOLUME_DOUBLE_TAP_WINDOW_MS = 280L
 }

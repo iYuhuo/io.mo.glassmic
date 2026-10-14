@@ -56,17 +56,22 @@ class LegacyXposedEntry : IXposedHookZygoteInit, IXposedHookLoadPackage {
 
                         val ctx = appCtx.applicationContext ?: appCtx
                         runCatching {
-                            HookBootstrap.start(ctx, pkg, api = null)
+                            XBridge.currentPackage = pkg
+                            XBridge.apiVersion = 82
+                            // 同 API 101：不再在 attach 阶段主动 ping RuntimeProvider，避免无故拉起本进程。
+                            LegacyAudioRecordHook.install(ctx, pkg)
+                            val nativeOk = NativeAAudioHook.install(ctx, pkg)
+                            XposedBridge.log("GlassMic-Legacy: hooks installed in $pkg native=$nativeOk")
                         }.onFailure {
-                            XposedBridge.log("Yuhuo-Legacy: bootstrap in $pkg failed: ${it.message}")
+                            XposedBridge.log("GlassMic-Legacy: install hooks in $pkg failed: ${it.message}")
                             XposedBridge.log(it)
                         }
                     }
                 }
             )
-            XposedBridge.log("Yuhuo-Legacy: Application.attach hook installed")
+            XposedBridge.log("GlassMic-Legacy: Application.attach hook installed")
         }.onFailure {
-            XposedBridge.log("Yuhuo-Legacy: failed to hook Application.attach: ${it.message}")
+            XposedBridge.log("GlassMic-Legacy: failed to hook Application.attach: ${it.message}")
             XposedBridge.log(it)
         }
     }

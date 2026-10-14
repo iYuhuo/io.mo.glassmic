@@ -1,6 +1,5 @@
 #include "glass_aaudio.h"
 #include "glass_audio_tap.h"
-#include "glass_opensl.h"
 #include "glass_pcm_broadcast.h"
 #include "glass_log.h"
 
@@ -17,8 +16,6 @@
 #include <thread>
 #include <unistd.h>
 #include <pthread.h>
-#include <unordered_set>
-#include <vector>
 
 namespace glass {
 
@@ -33,10 +30,6 @@ struct PcmFdState {
 
 static std::mutex g_fd_mutex;
 static PcmFdState g_fd_state;
-
-// 跟踪本进程内出现过的 AAudio 输入流，供一键解除占用时 requestStop。
-static std::mutex g_streams_mutex;
-static std::unordered_set<AAudioStream*> g_input_streams;
 
 // fd 锁只负责 read/close；音频线程不与系统调用争锁。
 // 缓冲锁只覆盖内存复制/游标更新，格式转换在锁外完成。
@@ -493,11 +486,6 @@ static aaudio_result_t my_AAudioStream_read(
         return g_orig_AAudioStream_read(stream, buffer, numFrames, timeoutNanos);
     }
 
-    {
-        std::lock_guard<std::mutex> lock(g_streams_mutex);
-        g_input_streams.insert(stream);
-    }
-
     // 保留系统录音时钟、超时、短读和错误语义，只覆盖实际返回的帧。
     // 否则紧循环会耗尽实时 PCM，并把大量补零帧发送给语音引擎。
     const bool was_reading = aaudio_read_in_progress;
@@ -525,10 +513,6 @@ static aaudio_data_callback_result_t my_data_callback(
 
     if (stream && audioData && numFrames > 0 &&
         AAudioStream_getDirection(stream) == AAUDIO_DIRECTION_INPUT) {
-        {
-            std::lock_guard<std::mutex> lock(g_streams_mutex);
-            g_input_streams.insert(stream);
-        }
         fill_input_buffer(stream, audioData, numFrames, CapturePath::AAUDIO_CALLBACK);
     }
 
@@ -652,29 +636,6 @@ void set_pcm_fd(int fd, int32_t sample_rate, int32_t channels) {
     }
     ensure_worker_started();
     LOGI("set_pcm_fd fd=%d sr=%d ch=%d (ring buffer cleared)", fd, sample_rate, channels);
-}
-
-bool has_pcm_fd() {
-    std::lock_guard<std::mutex> lock(g_fd_mutex);
-    return g_fd_state.fd >= 0;
-}
-
-void force_release_audio_inputs() {
-    std::vector<AAudioStream*> snapshot;
-    {
-        std::lock_guard<std::mutex> lock(g_streams_mutex);
-        snapshot.assign(g_input_streams.begin(), g_input_streams.end());
-        g_input_streams.clear();
-    }
-    for (AAudioStream* stream : snapshot) {
-        if (!stream) continue;
-        // 只 requestStop：流所有权在 App，close 容易 double-free
-        aaudio_result_t rc = AAudioStream_requestStop(stream);
-        LOGI("AAudio force requestStop stream=%p rc=%d", stream, static_cast<int>(rc));
-    }
-    set_pcm_fd(-1, 0, 0);
-    force_stop_opensl_recorders();
-    LOGI("force_release_audio_inputs aaudio=%zu", snapshot.size());
 }
 
 void drain_stats(

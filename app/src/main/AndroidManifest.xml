@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
@@ -8,6 +8,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <!-- 无 RECORD_AUDIO 时前台服务降级到 specialUse 类型，需要此权限 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- 音频推流防 CPU 睡眠唤醒锁 -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <!-- 通知 -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -51,7 +53,7 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:localeConfig="@xml/locales_config"
         android:supportsRtl="true"
-        android:theme="@style/Theme.Yuhuo"
+        android:theme="@style/Theme.GlassMic"
         tools:targetApi="35">
 
         <!-- legacy Xposed API 82 识别信息；API 101 会忽略这些 metadata -->

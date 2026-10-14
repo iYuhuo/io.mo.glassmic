@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.mo.glassmic.R
+import io.mo.glassmic.data.config.audioPolicyTargets
 import io.mo.glassmic.core.model.SourceType
 import io.mo.glassmic.data.audio.PlaybackController
 import io.mo.glassmic.data.config.AppLocale
@@ -37,6 +38,7 @@ data class HomeUiState(
     val policyLabel: String = "循环",
     val scopeLabel: String = "全局",
     val floatingWindowVisible: Boolean = false,
+    val isStreaming: Boolean = false,
     val positionMs: Long = 0L,
     val durationMs: Long = 0L,
     val progress: Float = 0f,
@@ -47,7 +49,14 @@ data class HomeUiState(
     val interceptReads: Long = 0L,
     val interceptBytes: Long = 0L,
     val interceptLastMs: Long = 0L,
-    val interceptLastPkg: String? = null
+    val interceptLastPkg: String? = null,
+    val audioPolicyBackend: Boolean = false,
+    val playbackPolicy: ProtoPolicy = ProtoPolicy.LOOP,
+    val sourceEmoji: String = "🎵",
+    val groupPlainName: String = "",
+    /** 生效范围卡片上展示的前几个应用包名。 */
+    val scopePackages: List<String> = emptyList(),
+    val scopeAllApps: Boolean = false
 )
 
 @HiltViewModel
@@ -58,10 +67,12 @@ class HomeViewModel @Inject constructor(
     private val bootGate: BootGateRepository,
     private val safeModeRepo: SafeModeRepository,
     private val playback: PlaybackController,
+    audioPolicy: io.mo.glassmic.root.AudioPolicyController,
     audioDao: AudioDao,
     hookStatusRepo: HookStatusRepository,
     audioStatsRepo: AudioStatsRepository
 ) : ViewModel() {
+    val policyStatus = audioPolicy.status
 
     private val groupsFlow = audioDao.observeGroups()
     private val clipsFlow = audioDao.observeAllClips()
@@ -79,8 +90,9 @@ class HomeViewModel @Inject constructor(
         val clip = clips.firstOrNull { it.id == rt.currentAudioId }
         val group = groups.firstOrNull { it.id == rt.currentGroupId }
         HomeUiState(
+            audioPolicyBackend = cfg.injectionBackend == io.mo.glassmic.proto.InjectionBackend.AUDIO_POLICY,
             running = rt.enabled && !rt.safeMode && bootGate.userEnabledAfterBoot(),
-            hasFileSource = rt.currentSourceType == SourceType.FILE && clip != null,
+            hasFileSource = (rt.currentSourceType == SourceType.FILE && clip != null) || (rt.currentSourceType == SourceType.TTS && rt.durationMs > 0),
             paused = rt.paused,
             sourceName = when (rt.currentSourceType) {
                 SourceType.FILE -> clip?.displayName ?: rt.currentAudioId ?: "—"
@@ -89,19 +101,41 @@ class HomeViewModel @Inject constructor(
                 SourceType.TTS -> AppLocale.string(context, R.string.source_tts)
             },
             groupName = group?.let { "${it.emoji} ${it.name}" } ?: "—",
+            sourceEmoji = when (rt.currentSourceType) {
+                SourceType.FILE -> group?.emoji ?: "🎵"
+                SourceType.TTS -> "🗣"
+                SourceType.SILENCE -> "🔇"
+                SourceType.REAL_MIC -> "🎙️"
+            },
+            groupPlainName = when (rt.currentSourceType) {
+                SourceType.FILE -> group?.name.orEmpty()
+                else -> ""
+            },
+            playbackPolicy = cfg.playbackPolicy,
+            scopeAllApps = cfg.injectionBackend == io.mo.glassmic.proto.InjectionBackend.AUDIO_POLICY && cfg.audioPolicyAllApps,
+            scopePackages = (if (cfg.injectionBackend == io.mo.glassmic.proto.InjectionBackend.AUDIO_POLICY)
+                cfg.audioPolicyTargets() else cfg.whitelistList).take(4),
             policyLabel = when (cfg.playbackPolicy) {
                 ProtoPolicy.SILENCE -> AppLocale.string(context, R.string.home_policy_silence)
                 ProtoPolicy.LOOP -> AppLocale.string(context, R.string.library_policy_loop)
                 ProtoPolicy.REAL_MIC -> AppLocale.string(context, R.string.library_policy_real_mic)
                 else -> AppLocale.string(context, R.string.library_policy_loop)
             },
-            scopeLabel = when (cfg.scopeMode) {
-                ProtoScope.GLOBAL -> AppLocale.string(context, R.string.scope_mode_global)
-                ProtoScope.WHITELIST -> AppLocale.string(context, R.string.home_scope_whitelist_count, cfg.whitelistCount)
-                // BLACKLIST 已在 UI 上隐藏；旧配置统一按"全系统"展示
-                else -> AppLocale.string(context, R.string.scope_mode_global)
+            scopeLabel = if (cfg.injectionBackend == io.mo.glassmic.proto.InjectionBackend.AUDIO_POLICY) {
+                val targets = cfg.audioPolicyTargets()
+                when {
+                    cfg.audioPolicyAllApps -> AppLocale.string(context, R.string.scope_all_apps_selected)
+                    targets.isEmpty() -> AppLocale.string(context, R.string.scope_none_selected)
+                    targets.size == 1 -> targets.first()
+                    else -> AppLocale.string(context, R.string.home_scope_whitelist_count, targets.size)
+                }
+            } else if (cfg.whitelistCount > 0) {
+                AppLocale.string(context, R.string.home_scope_whitelist_count, cfg.whitelistCount)
+            } else {
+                AppLocale.string(context, R.string.scope_none_selected)
             },
             floatingWindowVisible = rt.floatingWindowVisible,
+            isStreaming = rt.isStreaming,
             positionMs = rt.positionMs,
             durationMs = rt.durationMs,
             progress = if (rt.durationMs > 0) rt.positionMs.toFloat() / rt.durationMs else 0f,
@@ -121,7 +155,6 @@ class HomeViewModel @Inject constructor(
     }
 
     fun seekTo(positionMs: Long) {
-        runtime.setPosition(positionMs)
         viewModelScope.launch { playback.seekTo(positionMs) }
     }
 
@@ -147,6 +180,10 @@ class HomeViewModel @Inject constructor(
         } else {
             FloatingWindowService.start(context)
         }
+    }
+
+    fun setPolicy(policy: ProtoPolicy) {
+        viewModelScope.launch { configStore.update { it.setPlaybackPolicy(policy) } }
     }
 
     fun restoreRealMic() {

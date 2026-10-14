@@ -21,11 +21,9 @@ import java.util.concurrent.atomic.AtomicReference
  */
 object GlassLog {
 
-    private const val TAG_PREFIX = "yuhuo/"
+    private const val TAG_PREFIX = "GlassMic/"
     private const val RING_CAPACITY = 2000
-    private const val LOG_FILE_NAME = "yuhuo.log"
-    /** LogEntry 对象头 + 时间戳 + 级别的大致开销，只做日志展示，不追求精确。 */
-    private const val ENTRY_OVERHEAD_BYTES = 64L
+    private const val LOG_FILE_NAME = "glassmic.log"
 
     @Volatile
     var enabled: Boolean = true
@@ -87,8 +85,8 @@ object GlassLog {
     }
 
     /**
-     * 内存吃紧时用的裁剪方法：只保留最近 [keep] 条，返回估算释放的字节数。
-     * 日志已异步落盘，裁掉内存副本只影响排查便利性。
+     * 内存吃紧时裁掉环形缓冲，只保留最近 [keep] 条。返回估算释放的字节数。
+     * 日志本身已异步落盘，裁掉的只是内存副本，不丢数据。
      */
     fun trimRing(keep: Int): Long {
         var freed = 0L
@@ -100,14 +98,17 @@ object GlassLog {
     }
 
     /**
-     * 等待队列里排队的异步写落盘（单线程 FIFO，队尾任务跑完说明前面都写完了）。
-     * 用于查杀广播前的现场备份；超时返回 false。
+     * 等待已入队的落盘任务写完（单线程 FIFO，队尾任务跑完即代表前面都写完了）。
+     * 用于查杀广播的现场备份，超时返回 false。
      */
     fun flush(timeoutMs: Long): Boolean = runCatching {
         val latch = java.util.concurrent.CountDownLatch(1)
         ioExecutor.execute { latch.countDown() }
         latch.await(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
     }.getOrDefault(false)
+
+    /** LogEntry 对象头 + 时间戳 + 引用的粗略开销，只用于日志展示，不追求精确。 */
+    private const val ENTRY_OVERHEAD_BYTES = 64L
 }
 
 data class LogEntry(

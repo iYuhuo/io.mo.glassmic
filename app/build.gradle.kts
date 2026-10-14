@@ -9,14 +9,14 @@ plugins {
 
 android {
     namespace = "io.mo.glassmic"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "io.mo.glassmic"
         minSdk = 29
         targetSdk = 35
-        versionCode = 17
-        versionName = "1.3.4-perf"
+        versionCode = 25
+        versionName = "1.4.6"
         resourceConfigurations += listOf("zh-rCN", "en")
     }
 
@@ -25,7 +25,6 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-            signingConfig = signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -121,4 +120,7 @@ dependencies {
     // 协程
     implementation(libs.coroutines.core)
     implementation(libs.coroutines.android)
+
+    // libxposed service（用于向 LSPosed 动态申请应用作用域）
+    implementation(libs.libxposed.service)
 }

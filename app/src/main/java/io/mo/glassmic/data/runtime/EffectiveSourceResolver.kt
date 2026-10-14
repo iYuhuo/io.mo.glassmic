@@ -24,56 +24,68 @@ class EffectiveSourceResolver @Inject constructor(
     private val runtime: RuntimeStateHolder
 ) {
 
+    private val history = DecisionHistory()
+
     /**
      * 返回 [callerPackage] 当前命中后实际应使用的音源类型。
      *
      * @return REAL_MIC 表示不拦截原始麦克风
      */
-    fun resolve(callerPackage: String): SourceType = explain(callerPackage).source
+    fun resolve(callerPackage: String, forAudioPolicy: Boolean = false): SourceType {
+        val now = System.currentTimeMillis()
+        val (src, code, desc) = resolveInternal(callerPackage, forAudioPolicy)
+        history.record(DecisionRecord(now, callerPackage, src, code, desc,
+            backend = if (forAudioPolicy) "AUDIO_POLICY" else "LSPOSED"))
+        return src
+    }
 
-    /**
-     * 带原因说明的决策——供 Xposed 诊断「为何是 REAL_MIC」。
-     */
-    fun explain(callerPackage: String): ResolveExplanation {
+    private fun resolveInternal(callerPackage: String, forAudioPolicy: Boolean): Triple<SourceType, String, String> {
+        // 1. 安全模式
         if (safeMode.isActive()) {
-            return ResolveExplanation(SourceType.REAL_MIC, "safe_mode")
+            return Triple(SourceType.REAL_MIC, "SAFE_MODE", "安全模式已激活 (Safe mode active)")
         }
+        // 2. 重启后默认关闭
         if (!bootGate.userEnabledAfterBoot()) {
-            return ResolveExplanation(SourceType.REAL_MIC, "boot_gate")
+            return Triple(SourceType.REAL_MIC, "BOOT_GATE_LOCKED", "设备重启后保护未解锁 (Boot gate locked)")
         }
+        // 3. 首次启动门禁
         val snap = configStore.snapshotBlocking()
+        // Both backends share the same gates, but only the selected backend may replace PCM.
+        if (snap.audioPolicyBackend != forAudioPolicy) {
+            return Triple(SourceType.REAL_MIC, "OTHER_BACKEND", "由另一注入后端处理 (Other backend selected)")
+        }
         if (!snap.onboardingCompleted) {
-            return ResolveExplanation(SourceType.REAL_MIC, "onboarding")
+            return Triple(SourceType.REAL_MIC, "ONBOARDING_INCOMPLETE", "首次引导未完成 (Onboarding incomplete)")
         }
-        if (!ScopeMatcher.matches(callerPackage, snap)) {
-            val reason = when (snap.scopeMode) {
-                io.mo.glassmic.core.model.ScopeMode.WHITELIST -> "scope_whitelist"
-                io.mo.glassmic.core.model.ScopeMode.BLACKLIST -> "scope_blacklist"
-                else -> if (!snap.globalSwitch) "global_switch_off" else "scope"
-            }
-            return ResolveExplanation(SourceType.REAL_MIC, reason)
+        // 4. 全局总开关
+        if (!snap.globalSwitch) {
+            return Triple(SourceType.REAL_MIC, "GLOBAL_SWITCH_OFF", "全局总开关已关闭 (Global switch off)")
         }
+        // 5. 不 hook 自己
         if (callerPackage == Constants.APP_PACKAGE) {
-            return ResolveExplanation(SourceType.REAL_MIC, "self")
+            return Triple(SourceType.REAL_MIC, "SELF_PACKAGE", "跳过本模块自身进程 (Self package skip)")
         }
+        // 6. 生效范围
+        val inScope = if (forAudioPolicy) callerPackage.isNotBlank() &&
+                (snap.audioPolicyAllApps || callerPackage in snap.audioPolicyPackages)
+            else ScopeMatcher.matches(callerPackage, snap)
+        if (!inScope) {
+            return Triple(SourceType.REAL_MIC, "SCOPE_FILTERED", "未命中生效范围/白名单 (Scope filtered)")
+        }
+        // 7. 前台服务 / 运行态必须仍然开启
         val rt = runtime.value
         if (!rt.enabled) {
-            return ResolveExplanation(SourceType.REAL_MIC, "service_off")
+            return Triple(SourceType.REAL_MIC, "SERVICE_DISABLED", "运行态/前台服务未启动 (Service disabled)")
         }
-        if (rt.realMicPassThrough) {
-            return ResolveExplanation(SourceType.REAL_MIC, "real_mic_passthrough")
-        }
-        // 暂停时 hook 透传真实麦
-        if (rt.paused) {
-            return ResolveExplanation(SourceType.REAL_MIC, "paused")
-        }
-        // TTS 与 FILE 一样都是"从 PCM 管线注入"，对 Xposed 侧统一按 FILE 处理
-        val source = when (rt.currentSourceType) {
+        // 8. 当前运行态决定的音源
+        val eff = when (rt.currentSourceType) {
             SourceType.TTS -> SourceType.FILE
             else -> rt.currentSourceType
         }
-        return ResolveExplanation(source, "runtime_${rt.currentSourceType.name.lowercase()}")
+        return Triple(eff, "INTERCEPT_OK", "已选择音源 (${eff.name})，实际替换请查看拦截统计")
     }
+
+    fun getRecentDecisions(): List<DecisionRecord> = history.recent()
 
     /** 给 UI / 通知/ 悬浮窗显示用——和 resolve() 不同，这里返回是否模块整体在运行 */
     fun isModuleActiveForUi(): Boolean {
@@ -83,25 +95,4 @@ class EffectiveSourceResolver @Inject constructor(
     }
 
     fun configSnapshot(): ConfigSnapshot = configStore.snapshotBlocking()
-
-    /** 跨进程下发的强制解除麦克风占用序号（单调递增）。 */
-    fun forceReleaseToken(): Long = runtime.value.forceReleaseToken
-
-    /** 录音封锁截止时间（墙钟 ms）；0 表示未封锁。 */
-    fun recordingBlockUntilMs(): Long = runtime.recordingBlockUntilMs()
-
-    /**
-     * 是否落在模块作用域内（与虚拟麦注入的 ScopeMatcher 一致）。
-     * 解除占用 / 短暂禁录只作用于这些包。
-     */
-    fun isInModuleScope(callerPackage: String): Boolean {
-        if (callerPackage == Constants.APP_PACKAGE) return false
-        val snap = configStore.snapshotBlocking()
-        return ScopeMatcher.matches(callerPackage, snap)
-    }
 }
-
-data class ResolveExplanation(
-    val source: SourceType,
-    val reason: String
-)

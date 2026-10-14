@@ -1,13 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.Yuhuo" parent="android:Theme.Material.NoActionBar">
+    <style name="Theme.GlassMic" parent="android:Theme.Material.NoActionBar">
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="android:windowDrawsSystemBarBackgrounds">true</item>
-    </style>
-
-    <style name="Theme.Yuhuo.Overlay" parent="Theme.AppCompat.NoActionBar">
-        <item name="colorPrimary">#1C1C20</item>
-        <item name="colorAccent">#34C759</item>
     </style>
 </resources>

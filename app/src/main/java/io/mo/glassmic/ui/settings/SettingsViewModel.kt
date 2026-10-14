@@ -9,8 +9,6 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import io.mo.glassmic.service.WaveformOverlayService
 import io.mo.glassmic.data.audio.FloatingIconStore
 import io.mo.glassmic.data.config.ConfigStore
-import io.mo.glassmic.data.diag.AudioPipelineProbe
-import io.mo.glassmic.data.diag.DiagnosticBundler
 import io.mo.glassmic.data.runtime.AudioStatsRepository
 import io.mo.glassmic.data.runtime.HookStatus
 import io.mo.glassmic.data.runtime.HookStatusRepository
@@ -19,9 +17,13 @@ import kotlinx.coroutines.flow.asStateFlow
 import io.mo.glassmic.log.GlassLog
 import io.mo.glassmic.data.config.AppLocale
 import io.mo.glassmic.proto.AppConfig
+import io.mo.glassmic.proto.InjectionBackend
+import io.mo.glassmic.root.AudioPolicyController
+import io.mo.glassmic.root.PolicyPhase
+import io.mo.glassmic.data.runtime.RuntimeStateHolder
+import io.mo.glassmic.audio.BandSettings
 import io.mo.glassmic.proto.AppLanguage
 import io.mo.glassmic.proto.FloatingSize
-import io.mo.glassmic.proto.LogLevel
 import io.mo.glassmic.proto.PlaybackPolicy
 import io.mo.glassmic.proto.ThemeMode
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -45,12 +47,7 @@ data class SettingsUiState(
     val interceptLastMs: Long = 0L,
     val interceptLastPkg: String? = null,
     val interceptLastSr: Int = 0,
-    val interceptLastCh: Int = 0,
-    val exporting: Boolean = false,
-    val exportedUri: Uri? = null,
-    val exportError: String? = null,
-    val probing: Boolean = false,
-    val probeResult: AudioPipelineProbe.Result? = null
+    val interceptLastCh: Int = 0
 )
 
 @HiltViewModel
@@ -58,12 +55,43 @@ class SettingsViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val configStore: ConfigStore,
     private val floatingIconStore: FloatingIconStore,
-    private val bundler: DiagnosticBundler,
-    private val probe: AudioPipelineProbe,
     private val audioStatsRepo: AudioStatsRepository,
     private val visibilityCompatRepo: VisibilityCompatRepository,
+    private val audioPolicy: AudioPolicyController,
+    private val runtime: RuntimeStateHolder,
+    private val bundler: io.mo.glassmic.data.diag.DiagnosticBundler,
+    private val backgrounds: io.mo.glassmic.data.appearance.BackgroundStore,
     hookStatusRepo: HookStatusRepository
 ) : ViewModel() {
+
+    private val _exporting = MutableStateFlow(false)
+    val exporting: StateFlow<Boolean> = _exporting.asStateFlow()
+
+    /** 打包诊断数据，成功后把可分享的 Uri 交给调用方弹出分享面板。 */
+    fun exportDiagnostic(onReady: (Uri) -> Unit, onError: (Throwable) -> Unit) {
+        if (_exporting.value) return
+        _exporting.value = true
+        viewModelScope.launch {
+            runCatching { bundler.export() }
+                .onSuccess { onReady(bundler.shareUri(it)) }
+                .onFailure(onError)
+            _exporting.value = false
+        }
+    }
+
+    val policyStatus = audioPolicy.status
+    val runtimeState = runtime.flow
+
+    fun setBackend(backend: InjectionBackend) = viewModelScope.launch {
+        if (runtime.value.enabled ||
+            policyStatus.value.phase in listOf(PolicyPhase.STARTING, PolicyPhase.ACTIVE, PolicyPhase.STOPPING)) return@launch
+        // A killed process can leave global_switch persisted while the actual service is off.
+        // Also cancel a queued service start before replacing the backend.
+        io.mo.glassmic.service.GlassForegroundService.stop(context)
+        configStore.update { it.setGlobalSwitch(false).setInjectionBackend(backend) }
+    }
+
+    fun retryAudioPolicy() = audioPolicy.retry()
 
     private val _visibilityCompat = MutableStateFlow(visibilityCompatRepo.isEnabled())
     /** 「严格 ROM 兼容」开关状态，UI 单独 collect。 */
@@ -87,20 +115,9 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    private val _exporting = MutableStateFlow(false)
-    private val _exportedUri = MutableStateFlow<Uri?>(null)
-    private val _exportError = MutableStateFlow<String?>(null)
-    private val _probing = MutableStateFlow(false)
-    private val _probeResult = MutableStateFlow<AudioPipelineProbe.Result?>(null)
-
     val state: StateFlow<SettingsUiState> = combine(
-        combine(configStore.flow, hookStatusRepo.flow, audioStatsRepo.flow) { cfg, hook, stats ->
-            Triple(cfg, hook, stats)
-        },
-        combine(_exporting, _exportedUri, _exportError) { e, u, err -> Triple(e, u, err) },
-        combine(_probing, _probeResult) { p, r -> p to r }
-    ) { core, exp, prb ->
-        val (cfg, hook, stats) = core
+        configStore.flow, hookStatusRepo.flow, audioStatsRepo.flow
+    ) { cfg, hook, stats ->
         SettingsUiState(
             config = cfg,
             hook = hook,
@@ -109,12 +126,7 @@ class SettingsViewModel @Inject constructor(
             interceptLastMs = stats.lastInterceptMs,
             interceptLastPkg = stats.lastPackage,
             interceptLastSr = stats.lastSampleRate,
-            interceptLastCh = stats.lastChannels,
-            exporting = exp.first,
-            exportedUri = exp.second,
-            exportError = exp.third,
-            probing = prb.first,
-            probeResult = prb.second
+            interceptLastCh = stats.lastChannels
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, SettingsUiState())
 
@@ -125,6 +137,44 @@ class SettingsViewModel @Inject constructor(
 
     fun setGlassEffect(enabled: Boolean) = viewModelScope.launch {
         configStore.update { it.setAppearance(it.appearance.toBuilder().setGlassEffect(enabled)) }
+    }
+
+    // ============ 页面背景 ============
+    val wallpaperStatus = backgrounds.wallpaperStatus
+
+    private val _backgroundError = MutableStateFlow<String?>(null)
+    val backgroundError: StateFlow<String?> = _backgroundError.asStateFlow()
+    fun consumeBackgroundError() { _backgroundError.value = null }
+
+    fun setBackgroundMode(mode: io.mo.glassmic.proto.BackgroundMode) = viewModelScope.launch {
+        configStore.update { it.setAppearance(it.appearance.toBuilder().setBackgroundMode(mode)) }
+        if (mode == io.mo.glassmic.proto.BackgroundMode.BACKGROUND_WALLPAPER) backgrounds.refreshWallpaper(force = true)
+    }
+
+    /** 导入自选图片并切到「自选图片」背景。 */
+    fun setBackgroundImage(uri: Uri) = viewModelScope.launch {
+        val path = backgrounds.importImage(uri)
+        if (path == null) {
+            _backgroundError.value = AppLocale.string(context, io.mo.glassmic.R.string.settings_background_import_failed)
+            return@launch
+        }
+        configStore.update {
+            it.setAppearance(
+                it.appearance.toBuilder()
+                    .setBackgroundMode(io.mo.glassmic.proto.BackgroundMode.BACKGROUND_IMAGE)
+                    .setBackgroundImagePath(path)
+            )
+        }
+    }
+
+    fun refreshWallpaper() = viewModelScope.launch { backgrounds.refreshWallpaper(force = true) }
+
+    fun setBackgroundBlur(v: Float) = viewModelScope.launch {
+        configStore.update { it.setAppearance(it.appearance.toBuilder().setBackgroundBlur(v)) }
+    }
+
+    fun setBackgroundDim(v: Float) = viewModelScope.launch {
+        configStore.update { it.setAppearance(it.appearance.toBuilder().setBackgroundDim(v)) }
     }
 
     fun setReduceMotion(reduce: Boolean) = viewModelScope.launch {
@@ -146,6 +196,13 @@ class SettingsViewModel @Inject constructor(
     // ============ 悬浮窗 ============
     fun setFloatingEnabled(enabled: Boolean) = viewModelScope.launch {
         configStore.update { it.setFloatingWindow(it.floatingWindow.toBuilder().setEnabled(enabled)) }
+    }
+
+    /** 展开面板恢复默认大小。 */
+    fun resetFloatingPanelSize() = viewModelScope.launch {
+        configStore.update {
+            it.setFloatingWindow(it.floatingWindow.toBuilder().setPanelWidthDp(0).setPanelHeightDp(0).build())
+        }
     }
 
     fun setFloatingOpacity(opacity: Float) = viewModelScope.launch {
@@ -183,43 +240,47 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    // ============ 快捷操作 ============
+    /**
+     * 音量键双击快捷操作。开关只写配置——实际布防由悬浮窗服务在运行期间同步给 Xposed 侧，
+     * 悬浮窗没开时这里打开也不会拦任何按键。
+     */
+    fun setVolumeKeysEnabled(enabled: Boolean) = viewModelScope.launch {
+        configStore.update { it.setShortcuts(it.shortcuts.toBuilder().setVolumeKeysEnabled(enabled)) }
+    }
+
+    // ============ 实时耳返 / 音频监听 ============
+    fun setAudioMonitorEnabled(enabled: Boolean) = viewModelScope.launch {
+        configStore.update {
+            val cur = it.audioMonitor
+            it.setAudioMonitor(cur.toBuilder().setEnabled(enabled))
+        }
+    }
+
+    fun setAudioMonitorVolume(volume: Float) = viewModelScope.launch {
+        configStore.update {
+            val cur = it.audioMonitor
+            it.setAudioMonitor(cur.toBuilder().setVolume(volume.coerceIn(0f, 1f)))
+        }
+    }
+
     // ============ 默认播放策略 ============
     fun setPolicy(policy: PlaybackPolicy) = viewModelScope.launch {
         configStore.update { it.setPlaybackPolicy(policy) }
     }
 
-    // ============ 日志 ============
-    fun setLogLevel(level: LogLevel) = viewModelScope.launch {
-        configStore.update { it.setLogging(it.logging.toBuilder().setLevel(level).setEnabled(level != LogLevel.OFF)) }
-        GlassLog.level = when (level) {
-            LogLevel.OFF -> io.mo.glassmic.core.model.LogLevel.OFF
-            LogLevel.BASIC -> io.mo.glassmic.core.model.LogLevel.BASIC
-            LogLevel.VERBOSE -> io.mo.glassmic.core.model.LogLevel.VERBOSE
-            LogLevel.DEBUG -> io.mo.glassmic.core.model.LogLevel.DEBUG
-            else -> io.mo.glassmic.core.model.LogLevel.BASIC
-        }
-        GlassLog.enabled = level != LogLevel.OFF
-    }
-
-    fun clearLog() {
-        GlassLog.clear()
-    }
-
-    fun exportDiagnostic() = viewModelScope.launch {
-        _exporting.value = true
-        _exportError.value = null
-        runCatching { bundler.export() }
-            .onSuccess { _exportedUri.value = bundler.shareUri(it) }
-            .onFailure { _exportError.value = it.message ?: "导出失败" }
-        _exporting.value = false
-    }
-
-    fun consumeExport() {
-        _exportedUri.value = null
-        _exportError.value = null
-    }
-
     // ============ 实验功能 ============
+    fun setAudioBandEnabled(enabled: Boolean) = viewModelScope.launch {
+        configStore.update { it.setAudioBand(it.audioBand.toBuilder().setEnabled(enabled)) }
+    }
+
+    fun setAudioBand(lowHz: Int, highHz: Int) = viewModelScope.launch {
+        if (lowHz !in BandSettings.MIN_HZ until highHz || highHz > BandSettings.MAX_HZ) return@launch
+        configStore.update {
+            it.setAudioBand(it.audioBand.toBuilder().setEnabled(true).setLowHz(lowHz).setHighHz(highHz))
+        }
+    }
+
     fun setExperimentalUnlocked(unlocked: Boolean) = viewModelScope.launch {
         configStore.update { it.setExperimental(it.experimental.toBuilder().setUnlocked(unlocked)) }
     }
@@ -259,17 +320,4 @@ class SettingsViewModel @Inject constructor(
             it.setExperimental(it.experimental.toBuilder().setSpeedFactor(v.coerceIn(0.5f, 2.0f)))
         }
     }
-
-    // ============ 管线自检 + 统计 ============
-    fun runPipelineProbe() {
-        if (_probing.value) return
-        _probing.value = true
-        _probeResult.value = null
-        viewModelScope.launch {
-            _probeResult.value = probe.probe()
-            _probing.value = false
-        }
-    }
-
-    fun consumeProbe() { _probeResult.value = null }
 }

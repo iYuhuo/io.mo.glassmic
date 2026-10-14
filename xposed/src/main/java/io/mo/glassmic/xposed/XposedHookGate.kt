@@ -22,13 +22,19 @@ object XposedHookGate {
     }
 
     private val PROTECTED_PROCESSES: Set<String> = setOf(
-        // Android 系统进程
+        // Android 系统与通话核心进程
         "android",
         "system",
+        "com.android.server.telecom",
         "com.android.systemui",
         "com.android.settings",
         "com.android.phone",
+        "com.android.incallui",
+        "com.android.dialer",
+        "com.google.android.dialer",
         "com.android.bluetooth",
+        // 定位服务不采集虚拟麦克风，避免在系统常驻进程内启动音频轮询。
+        "com.android.location.fused",
         "com.android.nfc",
         "com.android.providers.settings",
         "com.android.providers.media.module",

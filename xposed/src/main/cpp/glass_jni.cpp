@@ -49,16 +49,6 @@ Java_io_mo_glassmic_xposed_NativeAAudioHook_nativeSetPcmFd(
     set_pcm_fd(fd, sample_rate, channels);
 }
 
-JNIEXPORT jboolean JNICALL
-Java_io_mo_glassmic_xposed_NativeAAudioHook_nativeHasPcmFd(JNIEnv*, jclass) {
-    return has_pcm_fd() ? JNI_TRUE : JNI_FALSE;
-}
-
-JNIEXPORT void JNICALL
-Java_io_mo_glassmic_xposed_NativeAAudioHook_nativeForceReleaseInputs(JNIEnv*, jclass) {
-    force_release_audio_inputs();
-}
-
 /** 调试抓取 fd（socketpair 写端），所有权交给 native；-1 关闭。 */
 JNIEXPORT void JNICALL
 Java_io_mo_glassmic_xposed_NativeAAudioHook_nativeSetTapFd(JNIEnv* env, jclass, jint fd) {

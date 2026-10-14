@@ -15,7 +15,7 @@ import javax.inject.Singleton
 enum class HookActivity {
     /** 从未收到过任何 ping，可能未启用模块 / 未重启 / 作用域未生效 */
     NEVER_PINGED,
-    /** 最近 5 分钟内收到过 ping，认为注入活跃 */
+    /** 最近 5 分钟内收到过通信心跳；不表示目标 App 正在录音或成功替换。 */
     ACTIVE,
     /** 收到过 ping 但已超过 5 分钟，可能模块仍在但目标 App 没在录音 */
     STALE
@@ -29,10 +29,8 @@ data class HookStatus(
 )
 
 /**
- * 读取 XPOSED_STATUS_PREFS——XBridge.pingModuleLoaded 写入的 last_ping 时间戳。
- *
- * Ping 来源：每个被注入的 App 进程在 Application.attach 阶段会调一次
- * RuntimeProvider#call("xposed_ping")，由 RuntimeProvider 写到这里。
+ * 读取 RuntimeProvider 查询/显式 ping 写入的通信心跳。
+ * 空闲 native poller 也会查询，实际替换必须检查独立的音频拦截统计。
  */
 @Singleton
 class HookStatusRepository @Inject constructor(

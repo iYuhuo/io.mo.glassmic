@@ -54,7 +54,7 @@ class GlassApplication : Application() {
         bootGate.refreshBootId()
         watchdog.attach()
 
-        // 公平运行内存（ITGSA / HyperOS）：监听系统预警/查杀广播，3 秒内回执
+        // 公平运行内存（ITGSA / HyperOS）：监听系统预警与查杀广播，3 秒内回执
         fairMemory.initialize()
 
         // 清理遗留的 TTS 临时合成文件：正常随合成结束删除，进程被杀时可能残留。
@@ -65,10 +65,10 @@ class GlassApplication : Application() {
             }
         }.start()
 
-        GlassLog.b("App") { "yuhuo Application started" }
+        GlassLog.b("App") { "GlassMic Application started" }
     }
 
-    /** 系统标准的内存回收回调，与公平运行内存广播走同一条回收链路。 */
+    /** 系统标准的内存回收回调，与公平运行内存广播共用同一条回收链路。 */
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
         fairMemory.onSystemTrim(level)

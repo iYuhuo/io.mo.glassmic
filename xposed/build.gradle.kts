@@ -42,8 +42,8 @@ android {
         }
     }
 
-    // 使用本机可用的 NDK 27（原 r26 安装损坏缺失 source.properties）
-    ndkVersion = "27.1.12297006"
+    // 稳定版 NDK r26b，规避 rc 版潜在 toolchain bug，并消除 CXX5304（SDK XML v4）警告
+    ndkVersion = "26.1.10909125"
 
     buildFeatures {
         prefab = true

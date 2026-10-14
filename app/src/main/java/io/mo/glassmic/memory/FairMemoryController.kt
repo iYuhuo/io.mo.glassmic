@@ -79,7 +79,6 @@ class FairMemoryController @Inject constructor(
                     // 系统广播，必须显式声明 EXPORTED，否则 T+ 上注册即崩
                     context.registerReceiver(receiver, filter, null, h, Context.RECEIVER_EXPORTED)
                 } else {
-                    @Suppress("UnspecifiedRegisterReceiverFlag")
                     context.registerReceiver(receiver, filter, null, h)
                 }
             }.onFailure {

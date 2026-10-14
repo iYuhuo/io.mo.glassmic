@@ -18,5 +18,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "yuhuo"
+rootProject.name = "GlassMic"
 include(":app", ":xposed", ":core")

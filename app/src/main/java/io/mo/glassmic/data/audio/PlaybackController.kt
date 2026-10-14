@@ -1,30 +1,35 @@
 package io.mo.glassmic.data.audio
 
-import android.content.Context
-import dagger.hilt.android.qualifiers.ApplicationContext
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioManager
+import android.media.AudioTrack
 import io.mo.glassmic.audio.BufferedPcmSource
 import io.mo.glassmic.audio.FileAudioSource
 import io.mo.glassmic.audio.Pcm16Converter
 import io.mo.glassmic.audio.SharedPcmPublisher
+import io.mo.glassmic.audio.SilenceSource
 import io.mo.glassmic.audio.tts.PcmSink
 import io.mo.glassmic.audio.tts.TtsRequest
 import io.mo.glassmic.audio.tts.TtsSynthesizerFactory
 import io.mo.glassmic.core.model.SourceType
 import io.mo.glassmic.data.config.ConfigStore
 import io.mo.glassmic.data.db.AudioDao
-import io.mo.glassmic.data.runtime.MicOccupationReleaser
 import io.mo.glassmic.data.runtime.RuntimeStateHolder
 import io.mo.glassmic.log.GlassLog
 import io.mo.glassmic.memory.MemoryPressure
 import io.mo.glassmic.memory.MemoryPressureBus
 import io.mo.glassmic.memory.MemoryReleasable
-import io.mo.glassmic.service.FloatingWindowConstants
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -43,18 +48,16 @@ import javax.inject.Singleton
  */
 @Singleton
 class PlaybackController @Inject constructor(
-    @ApplicationContext private val appContext: Context,
     private val publisher: SharedPcmPublisher,
     private val resolver: AudioFileResolver,
     private val configStore: ConfigStore,
     private val runtime: RuntimeStateHolder,
     private val dao: AudioDao,
-    private val ttsFactory: TtsSynthesizerFactory,
-    private val micOccupationReleaser: MicOccupationReleaser,
+    private val ttsFactory: TtsSynthesizerFactory
 ) : MemoryReleasable {
 
     init {
-        // 持有可丢弃的最大一块常驻内存（TTS 生成的 PCM），登记到内存压力总线。
+        // 本类持有整个进程里最大的一块可丢弃内存（TTS 生成的 PCM），登记到内存压力总线
         MemoryPressureBus.register(this)
     }
 
@@ -71,15 +74,12 @@ class PlaybackController @Inject constructor(
             .onFailure { GlassLog.b("Playback") { "FileAudioSource 创建失败: ${it.message}" } }
             .getOrNull() ?: return@withContext false
 
-        // 排空旧帧/转换器，避免切歌时闪出上一段尾巴（不必拆 pipe）
-        publisher.drainForSourceSwitch()
         publisher.setSource(src, groupId = clip.groupId, audioId = clip.id)
         publisher.setPaused(startPaused)
         configStore.update {
             it.setCurrentGroupId(clip.groupId)
             it.setCurrentAudioId(clip.id)
         }
-        applyLocalMonitorPreference()
         true
     }
 
@@ -90,17 +90,88 @@ class PlaybackController @Inject constructor(
     /** 生成状态：供悬浮窗决定「播放」按钮是否可用。 */
     val ttsGen: StateFlow<TtsGen> = _ttsGen.asStateFlow()
 
-    @Volatile private var generatedTtsPcm: ByteArray? = null
-    private val _generatedTtsText = MutableStateFlow<String?>(null)
-    /** 与缓存 PCM 对应的原文；UI 用来判断草稿是否已过期。 */
-    val generatedTtsText: StateFlow<String?> = _generatedTtsText.asStateFlow()
+    private val _ttsPreviewing = MutableStateFlow(false)
+    /** 本地试听状态：供悬浮窗显示试听/停止按钮。 */
+    val ttsPreviewing: StateFlow<Boolean> = _ttsPreviewing.asStateFlow()
+    private var previewJob: Job? = null
+    private var previewTrack: AudioTrack? = null
 
-    /** 缓存的 PCM 是否就是 [text]（trim 后比较）。 */
-    fun hasGeneratedFor(text: String): Boolean {
-        val trimmed = text.trim()
-        return trimmed.isNotEmpty() &&
-            generatedTtsPcm != null &&
-            _generatedTtsText.value == trimmed
+    @Volatile private var generatedTtsPcm: ByteArray? = null
+
+    /**
+     * 在本机扬声器/耳机试听上次生成的语音（不占用虚拟麦克风推流管线）。
+     */
+    suspend fun togglePreviewTts() = withContext(Dispatchers.IO) {
+        if (_ttsPreviewing.value) {
+            stopPreviewTts()
+        } else {
+            startPreviewTts()
+        }
+    }
+
+    fun stopPreviewTts() {
+        previewJob?.cancel()
+        previewJob = null
+        previewTrack?.let {
+            runCatching { it.stop() }
+            runCatching { it.release() }
+        }
+        previewTrack = null
+        _ttsPreviewing.value = false
+    }
+
+    private fun startPreviewTts() {
+        val pcm = generatedTtsPcm ?: run {
+            GlassLog.b("Playback") { "TTS 试听失败：尚未生成语音" }
+            return
+        }
+        stopPreviewTts()
+        previewJob = CoroutineScope(Dispatchers.IO).launch {
+            _ttsPreviewing.value = true
+            try {
+                val minBuf = AudioTrack.getMinBufferSize(
+                    MASTER_SAMPLE_RATE,
+                    AudioFormat.CHANNEL_OUT_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT
+                )
+                val track = AudioTrack(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build(),
+                    AudioFormat.Builder()
+                        .setSampleRate(MASTER_SAMPLE_RATE)
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                        .build(),
+                    maxOf(minBuf, MASTER_SAMPLE_RATE * 2),
+                    AudioTrack.MODE_STREAM,
+                    AudioManager.AUDIO_SESSION_ID_GENERATE
+                )
+                previewTrack = track
+                track.play()
+                var written = 0
+                val chunkSize = 4096
+                while (isActive && written < pcm.size) {
+                    val len = minOf(chunkSize, pcm.size - written)
+                    val ret = track.write(pcm, written, len)
+                    if (ret < 0) break
+                    written += ret
+                }
+                // 等待缓冲音频播放完毕：计算实际播放时长
+                val durationMs = pcm.size.toLong() * 1000 / (MASTER_SAMPLE_RATE * 2)
+                delay(durationMs + 300)
+            } catch (t: Throwable) {
+                GlassLog.b("Playback") { "TTS 试听异常: ${t.message}" }
+            } finally {
+                previewTrack?.let {
+                    runCatching { it.stop() }
+                    runCatching { it.release() }
+                }
+                previewTrack = null
+                _ttsPreviewing.value = false
+            }
+        }
     }
 
     /**
@@ -108,11 +179,11 @@ class PlaybackController @Inject constructor(
      * 之后调用 [playGeneratedTts] 才真正喂给目标 App，可重复播放。
      */
     suspend fun generateTts(text: String): Boolean = withContext(Dispatchers.IO) {
+        stopPreviewTts()
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return@withContext false
         _ttsGen.value = TtsGen.GENERATING
         generatedTtsPcm = null
-        _generatedTtsText.value = null
         val ttsCfg = configStore.current().tts
         val synth = ttsFactory.current()
         val req = TtsRequest(
@@ -121,66 +192,16 @@ class PlaybackController @Inject constructor(
             pitch = ttsCfg.pitch.takeIf { it > 0f } ?: 1f,
             voice = ttsCfg.voice
         )
-        try {
-            val pcm = withTimeoutOrNull(30_000L) { synthesizeToMasterPcm(synth, req) }
-            if (pcm != null && pcm.isNotEmpty()) {
-                generatedTtsPcm = pcm
-                _generatedTtsText.value = trimmed
-                _ttsGen.value = TtsGen.READY
-                GlassLog.b("Playback") { "TTS 已生成: ${trimmed.take(20)} (${pcm.size} B)" }
-                true
-            } else {
-                _ttsGen.value = TtsGen.FAILED
-                GlassLog.b("Playback") { "TTS 生成失败/超时: ${trimmed.take(20)}" }
-                false
-            }
-        } catch (e: CancellationException) {
-            _ttsGen.value = TtsGen.IDLE
-            GlassLog.b("Playback") { "TTS 生成已取消" }
-            throw e
-        }
-    }
-
-    /**
-     * 播放 [text]：草稿与上次生成不一致时先合成再播，避免误播旧文案。
-     * 文本未变则直接重播缓存。
-     */
-    suspend fun playTts(text: String): Boolean = withContext(Dispatchers.IO) {
-        val trimmed = text.trim()
-        if (trimmed.isEmpty()) return@withContext false
-        if (!hasGeneratedFor(trimmed)) {
-            if (!generateTts(trimmed)) return@withContext false
-        }
-        playGeneratedTts()
-    }
-
-    /**
-     * 切到音频库时：若当前在播 TTS，恢复上次选中的虚拟音源并暂停（不自动播放）。
-     * 已是文件音源则只保证暂停，避免与 TTS「同时在播」的错觉。
-     */
-    suspend fun switchToLibrarySource(): Boolean = withContext(Dispatchers.IO) {
-        clearTtsDelayCountdown()
-        ttsFactory.cancelAll()
-        if (_ttsGen.value == TtsGen.GENERATING) {
-            _ttsGen.value = if (generatedTtsPcm != null) TtsGen.READY else TtsGen.IDLE
-        }
-        when (runtime.value.currentSourceType) {
-            SourceType.FILE -> {
-                if (!publisher.isPaused) pause()
-                true
-            }
-            else -> {
-                val clipId = configStore.current().currentAudioId.takeIf { it.isNotBlank() }
-                if (clipId != null) {
-                    setCurrentClip(clipId, startPaused = true)
-                } else {
-                    // 没有上次音源：暂停当前 TTS，用舒适噪声保活，切真麦/纯静音会触发录音错误
-                    if (runtime.value.currentSourceType == SourceType.TTS && !publisher.isPaused) {
-                        pause()
-                    }
-                    false
-                }
-            }
+        val pcm = withTimeoutOrNull(30_000L) { synthesizeToMasterPcm(synth, req) }
+        if (pcm != null && pcm.isNotEmpty()) {
+            generatedTtsPcm = pcm
+            _ttsGen.value = TtsGen.READY
+            GlassLog.b("Playback") { "TTS 已生成: ${trimmed.take(20)} (${pcm.size} B)" }
+            true
+        } else {
+            _ttsGen.value = TtsGen.FAILED
+            GlassLog.b("Playback") { "TTS 生成失败/超时: ${trimmed.take(20)}" }
+            false
         }
     }
 
@@ -196,6 +217,7 @@ class PlaybackController @Inject constructor(
      * （被取消则返回 false）。
      */
     suspend fun playGeneratedTts(): Boolean = withContext(Dispatchers.IO) {
+        stopPreviewTts()
         val pcm = generatedTtsPcm ?: return@withContext false
 
         val delayMs = configStore.current().tts.delayMs.toLong().coerceAtLeast(0L)
@@ -220,14 +242,12 @@ class PlaybackController @Inject constructor(
             _ttsDelayRemainingMs.value = 0L
         }
 
-        // 先暂停、拆旧 pipe、再挂上新 TTS——第二次播放必须新 pipe，否则结尾会再次读出上一段开头
-        // 本地监听已独立时钟：不再为此关监听（注入无 consumer 时也不会空转超前）
-        publisher.setPaused(true)
-        publisher.resetConsumersForNewSession()
         publisher.setSource(BufferedPcmSource(pcm))
         publisher.setPaused(false)
-        // 不清除 currentAudioId：保留上次虚拟音源，切回音频库时可直接恢复（暂停态）
-        applyLocalMonitorPreferenceBlocking()
+        configStore.update {
+            it.setCurrentGroupId("")
+            it.setCurrentAudioId("")
+        }
         true
     }
 
@@ -273,85 +293,15 @@ class PlaybackController @Inject constructor(
         const val COUNTDOWN_TICK_MS = 100L
     }
 
-    /** 切回真实麦克风：关闭虚拟注入，hook 透传真麦。 */
+    /** 切回真实麦克风：释放当前 file source，运行态置 REAL_MIC，清空持久化选中。 */
     suspend fun setRealMic() = withContext(Dispatchers.IO) {
-        runtime.setRealMicPassThrough(false)
-        publisher.setLocalMonitor(false)
-        publisher.switchToRealMic()
+        publisher.setPaused(false)
+        publisher.setSource(SilenceSource)
+        runtime.setSource(SourceType.REAL_MIC, groupId = null, audioId = null, durationMs = 0L)
         configStore.update {
             it.setCurrentGroupId("")
             it.setCurrentAudioId("")
         }
-    }
-
-    /**
-     * 切换「解除占用 + 持续禁录」（仅作用域内 App，不杀进程、不重启 audioserver）。
-     * 已禁录时再次调用恢复录音。
-     */
-    suspend fun forceReleaseMicOccupation(): MicOccupationReleaser.Result = withContext(Dispatchers.IO) {
-        micOccupationReleaser.toggleBlocking(
-            onProceed = {
-                publisher.resetConsumersForNewSession()
-            },
-        )
-    }
-
-    suspend fun setOutputVolume(volume: Float) = withContext(Dispatchers.IO) {
-        val clamped = volume.coerceIn(
-            FloatingWindowConstants.OUTPUT_VOLUME_MIN,
-            FloatingWindowConstants.OUTPUT_VOLUME_MAX
-        )
-        publisher.setOutputVolumeRuntime(clamped)
-        configStore.update {
-            it.setFloatingWindow(it.floatingWindow.toBuilder().setOutputVolume(clamped))
-        }
-    }
-
-    /** 拖动音量条时立即生效（不写盘）。 */
-    fun setOutputVolumeRuntime(volume: Float) {
-        publisher.setOutputVolumeRuntime(
-            volume.coerceIn(
-                FloatingWindowConstants.OUTPUT_VOLUME_MIN,
-                FloatingWindowConstants.OUTPUT_VOLUME_MAX
-            )
-        )
-    }
-
-    fun outputVolumeBlocking(): Float = publisher.outputVolumeBlocking()
-
-    val isLocalMonitorEnabled: Boolean get() = publisher.isLocalMonitorEnabled
-
-    /** 运行时是否正在本地监听（供 UI，勿用偏好配置冒充）。 */
-    val localMonitorEnabled: StateFlow<Boolean> = publisher.localMonitorEnabled
-
-    /** 仅切换运行时监听，不修改持久化偏好（如切回真实麦、关闭主开关）。 */
-    fun setLocalMonitorRuntime(enabled: Boolean) {
-        publisher.setLocalMonitor(enabled)
-    }
-
-    /** 持久化本地监听偏好，并按当前音源状态应用。 */
-    suspend fun setLocalMonitorEnabled(enabled: Boolean) = withContext(Dispatchers.IO) {
-        configStore.update {
-            it.setFloatingWindow(it.floatingWindow.toBuilder().setLocalMonitor(enabled))
-        }
-        applyLocalMonitorPreference()
-    }
-
-    /** 根据持久化偏好与当前运行态，决定是否开启本地监听。 */
-    suspend fun applyLocalMonitorPreference() = withContext(Dispatchers.IO) {
-        applyLocalMonitorPreferenceBlocking()
-    }
-
-    private fun applyLocalMonitorPreferenceBlocking() {
-        val preferred = configStore.currentBlocking().floatingWindow.localMonitor
-        val rt = runtime.value
-        val activeVirtual = rt.enabled && !rt.safeMode &&
-            (rt.currentSourceType == SourceType.FILE || rt.currentSourceType == SourceType.TTS)
-        publisher.setLocalMonitor(preferred && activeVirtual)
-    }
-
-    suspend fun isLocalMonitorPreferred(): Boolean = withContext(Dispatchers.IO) {
-        configStore.current().floatingWindow.localMonitor
     }
 
     suspend fun restorePersistedClip(): Boolean {
@@ -367,9 +317,7 @@ class PlaybackController @Inject constructor(
     }
 
     fun resume() {
-        runtime.setRealMicPassThrough(false)
         publisher.setPaused(false)
-        applyLocalMonitorPreferenceBlocking()
         GlassLog.b("Playback") { "恢复" }
     }
 
@@ -386,26 +334,25 @@ class PlaybackController @Inject constructor(
     /**
      * 释放 TTS 生成缓存。
      *
-     * 48kHz 单声道 PCM16 = 96KB/秒，一段一分钟的语音大约 5.6MB，是本模块最大一块
-     * 可丢弃内存。丢掉只影响「重复播放」——下一次播放用户重新生成即可恢复。
+     * 48kHz 单声道 PCM16 = 96KB/秒，一段一分钟的语音就是 5.6MB，是本进程最大的一块
+     * 可丢弃内存。丢掉只影响「重复播放上一段语音」，用户重新生成即可恢复。
      *
-     * 正在合成、或者 PCM 正是当前音源 / 目标 App 正在读时绝不丢——那会直接打断
-     * 正在的功能。正在出声的音频路径在任何压力等级下都不受影响。
+     * 正在合成、或这段 PCM 正是当前音源（目标 App 正在读它）时绝不丢——那会直接打断
+     * 核心功能。正在出声的音频管线在任何压力等级下都不动。
      */
     override fun onMemoryPressure(level: MemoryPressure): Long {
         val pcm = generatedTtsPcm ?: return 0L
         if (_ttsGen.value == TtsGen.GENERATING) return 0L
         if (publisher.playingBufferedPcm) return 0L
         val shouldDrop = when (level) {
-            // 只是进了后台/系统刚开始吃紧：用户随时回来重播，不丢。
+            // 只是切到后台/系统轻度吃紧，用户可能马上回来重播，留着
             MemoryPressure.LIGHT -> false
-            // 没有 App 在读 PCM 时才丢——有录音在进行时用户会指望重播。
+            // 没有 App 在读 PCM 时才丢，避免录音过程中用户点重播落空
             MemoryPressure.MODERATE -> publisher.consumerCount == 0
             else -> true
         }
         if (!shouldDrop) return 0L
         generatedTtsPcm = null
-        _generatedTtsText.value = null
         _ttsGen.value = TtsGen.IDLE
         GlassLog.b("Playback") { "内存压力($level)：释放 TTS 缓存 ${pcm.size / 1024}KB" }
         return pcm.size.toLong()

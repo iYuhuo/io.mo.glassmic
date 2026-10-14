@@ -52,15 +52,6 @@ void note_capture(CapturePath path);
  */
 void set_pcm_fd(int fd, int32_t sample_rate, int32_t channels);
 
-/** 当前 native 侧是否持有可用 PCM pipe fd（供 Kotlin 判断是否需要重开）。 */
-bool has_pcm_fd();
-
-/**
- * 一键解除占用：停止本进程跟踪到的 AAudio 输入流，并联动 OpenSL 录音器停止；
- * 同时清空 PCM fd。不 close 流对象（所有权在 App）。
- */
-void force_release_audio_inputs();
-
 /**
  * 拉出累计的劫持统计（reads, bytes），并清零。
  * 由 Kotlin 侧轮询线程调用，再上报给 ContentProvider。

@@ -1,4 +1,4 @@
-﻿syntax = "proto3";
+syntax = "proto3";
 
 package io.mo.glassmic.proto;
 
@@ -34,6 +34,49 @@ message AppConfig {
 
   // 文字转语音（TTS → 虚拟麦克风）配置
   TtsConfig tts = 16;
+
+  // 物理按键快捷操作
+  Shortcuts shortcuts = 17;
+
+  // 实时耳返 / 音频监听配置
+  AudioMonitor audio_monitor = 18;
+
+  // Global output filter, shared by imported audio and TTS. Disabled for existing installations.
+  AudioBand audio_band = 19;
+
+  // Opt-in backend. Zero preserves existing LSPosed installations.
+  InjectionBackend injection_backend = 20;
+  // Independent selection, so LSPosed scope sync cannot overwrite the root target.
+  // Legacy single target; read as part of audio_policy_packages and cleared on the next edit.
+  string audio_policy_package = 21;
+  // AudioPolicy targets (one UID rule each, OR-ed inside a single injection mix).
+  repeated string audio_policy_packages = 22;
+  // Target every eligible third-party app that requests RECORD_AUDIO; ignores audio_policy_packages.
+  bool audio_policy_all_apps = 23;
+}
+
+enum InjectionBackend {
+  LSPOSED = 0;
+  AUDIO_POLICY = 1;
+}
+
+message AudioBand {
+  bool enabled = 1;
+  int32 low_hz = 2;   // 20..19999 Hz; zero means 100 Hz
+  int32 high_hz = 3;  // low_hz < high_hz <= 20000; zero means 8000 Hz
+}
+
+// 实时耳返 / 本地监听播放：在虚拟麦克风推流时，同步通过扬声器/耳机输出声音
+message AudioMonitor {
+  bool enabled = 1;      // 是否开启实时监听/耳返
+  float volume = 2;      // 监听音量 0.0 - 1.0，0 视为 1.0
+}
+
+// 快捷操作：不碰屏幕就能控制虚拟麦克风的播放
+message Shortcuts {
+  // 悬浮窗开启时，双击音量上键=播放、双击音量下键=暂停。
+  // 需要 LSPosed 作用域勾选「系统框架」——按键事件只在 system_server 里拿得到。
+  bool volume_keys_enabled = 1;
 }
 
 // TTS 配置：系统 TTS 参数 + 预留的 AI TTS 接口
@@ -51,14 +94,11 @@ message TtsConfig {
 
   // 延时播放：点「播放」后等待多少毫秒再真正出声，0 表示立即播放
   int32 delay_ms = 6;
-
-  // TTS 播完策略（与全局 playback_policy 独立；默认 SILENCE=切回真麦，与 REAL_MIC 同行为）
-  PlaybackPolicy playback_policy = 7;
 }
 
 // AI TTS 接入配置。兼容 OpenAI / Gemini 接口协议，支持自定义 url 与模型。
 message TtsAiConfig {
-  bool enabled = 1;        // true=在线 AI；false=系统 TTS（本地/MultiTTS）。关闭不清除其它字段
+  bool enabled = 1;        // 是否优先走 AI TTS（关闭则回退系统 TTS）
   string endpoint = 2;     // 自定义接口地址（留空按 provider 用官方默认）
   string api_key = 3;      // 鉴权 key
   string model = 4;        // 自定义模型名（留空按 provider 用默认）
@@ -102,10 +142,9 @@ message FloatingWindow {
   string custom_icon_path = 5;
   bool waveform_enabled = 6;   // 实时波形悬浮窗开关
   float waveform_opacity = 7;  // 0.0 - 1.0，波形悬浮窗透明度，0 视为默认
-  bool local_monitor = 8;
-  bool real_mic_mix = 9;
-  // 虚拟音源注入音量倍率，1.0 = 100%，范围建议 0.0~2.0
-  float output_volume = 10;
+  // 展开面板的自定义尺寸（dp），拖动面板右边缘 / 下边缘 / 右下角调整；0 表示默认（宽 340、高自适应）
+  int32 panel_width_dp = 8;
+  int32 panel_height_dp = 9;
 }
 
 enum FloatingMode {
@@ -127,6 +166,21 @@ message Appearance {
   AppLanguage language = 4;
   // false 时启动逻辑会按系统语言自动写入 language 并置为 true，此后不再自动改写。
   bool language_resolved = 5;
+
+  // 页面背景：默认光斑 / 自选图片 / 跟随手机壁纸
+  BackgroundMode background_mode = 6;
+  // 自选图片的相对路径（filesDir 下，如 background/custom_xxx.jpg）
+  string background_image_path = 7;
+  // 卡片磨砂层模糊程度 0..1（未设置时按 0.5），背景本身不模糊
+  optional float background_blur = 8;
+  // 卡片磨砂层遮罩强度 0..1（未设置时按 0.35），保证卡片文字可读
+  optional float background_dim = 9;
+}
+
+enum BackgroundMode {
+  BACKGROUND_DEFAULT = 0;
+  BACKGROUND_IMAGE = 1;
+  BACKGROUND_WALLPAPER = 2;
 }
 
 enum ThemeMode {

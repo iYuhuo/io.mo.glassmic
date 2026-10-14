@@ -43,17 +43,29 @@ class GlassMicXposedModule : XposedModule() {
 
     override fun onSystemServerStarting(param: XposedModuleInterface.SystemServerStartingParam) {
         log(Log.INFO, TAG, "loaded in system_server")
-        // 不在 system_server 里装 audio hook——保护核心进程。
-        // 仅当用户开启「严格 ROM 兼容」时，安装"包可见性放行"hook（只放行本模块包）。
+        // 跨进程包可见性兼容：只对 GlassMic 当前目标白名单里的调用方解除本包可见性过滤。
+        // 这样 Telegram/微信等严格执行 Android 11+ 包可见性的应用仍能访问 Provider；
+        // 未授权应用则完全保留系统/HMA 的原始过滤结果，不再把 GlassMic 全局暴露出去。
         runCatching {
-            if (isVisibilityCompatEnabled()) {
-                val ok = SystemVisibilityHook.install(this, param.classLoader)
-                log(Log.INFO, TAG, "visibility compat ON, hook installed=$ok")
-            } else {
-                log(Log.INFO, TAG, "visibility compat OFF (default)")
+            val ok = SystemVisibilityHook.install(this, param.classLoader) {
+                runCatching { getRemotePreferences(Constants.REMOTE_PREFS) }.getOrNull()
             }
+            log(Log.INFO, TAG, "scoped visibility allowlist hook installed=$ok")
         }.onFailure {
             log(Log.WARN, TAG, "visibility compat init error: ${it.message}", it)
+        }
+
+        // 音量键双击快捷操作。这里**无条件**安装，实际是否拦截由 App 侧写入的「布防」标志
+        // 决定（设置开关打开 && 悬浮窗正在运行）。之所以不像上面那样在安装前判开关：
+        // onSystemServerStarting 是本模块进入 system_server 的唯一时机，若按开关决定装不装，
+        // 用户开启开关后就必须重启设备才生效。未布防时回调只做一次布尔判断即返回，代价可忽略。
+        runCatching {
+            val ok = VolumeKeyHook.install(this, param.classLoader) {
+                runCatching { getRemotePreferences(Constants.REMOTE_PREFS) }.getOrNull()
+            }
+            log(Log.INFO, TAG, "volume key hook installed=$ok")
+        }.onFailure {
+            log(Log.WARN, TAG, "volume key hook init error: ${it.message}", it)
         }
     }
 
@@ -113,9 +125,20 @@ class GlassMicXposedModule : XposedModule() {
                     return@intercept result
                 }
 
-                // 真正的 audio hook 安装在 App 进程上下文里（始终安装，运行时决定是否改写）
+                // 真正的 audio hook 安装在 App 进程上下文里
                 val ctx = appCtx.applicationContext ?: appCtx
-                HookBootstrap.start(ctx, pkg, this@GlassMicXposedModule)
+                runCatching {
+                    XBridge.currentPackage = pkg
+                    XBridge.apiVersion = 101
+                    // 注意：这里**不再**主动 pingModuleLoaded / 发起任何 ContentResolver 调用。
+                    // 之前每个 App 启动都 ping 一次 RuntimeProvider，是「被杀又秒复活」的主要来源之一。
+                    // 「模块已激活」的诊断状态改由 RuntimeProvider.query 在真正被查询时更新。
+                    AudioRecordHook.install(this@GlassMicXposedModule, ctx, pkg)
+                    val nativeOk = NativeAAudioHook.install(ctx, pkg)
+                    log(Log.INFO, TAG, "hooks installed in $pkg native=$nativeOk")
+                }.onFailure {
+                    log(Log.WARN, TAG, "install hooks in $pkg failed: ${it.message}", it)
+                }
                 result
             }
         log(Log.INFO, TAG, "Application.attach hook installed (zygote-level)")

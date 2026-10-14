@@ -4,8 +4,8 @@ package io.mo.glassmic.audio.tts
  * 语音合成抽象。把"文字 → PCM 音频"这一步与具体引擎解耦。
  *
  * 目前有两种实现：
- * - [SystemTtsSynthesizer]：系统 TextToSpeech（本地默认引擎，如 MultiTTS），离线可用。
- * - [AiTtsSynthesizer]：在线 AI TTS（OpenAI / Gemini / MiMo）。
+ * - [SystemTtsSynthesizer]：系统 TextToSpeech，离线、零依赖、随时可用。
+ * - [AiTtsSynthesizer]：在线 AI TTS（预留接口，暂时隐藏在设置里）。
  *
  * 约定：合成结果以 PCM16（小端、交错）分块经 [PcmSink] 回调返回，
  * 绝不直接播放到扬声器——音频只喂给虚拟麦克风管线。

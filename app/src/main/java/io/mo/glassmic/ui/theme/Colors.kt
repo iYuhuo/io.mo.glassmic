@@ -6,7 +6,7 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.ui.graphics.Color
 
 /**
- * yuhuo 设计 token——类 iOS / 极简 / 液态玻璃
+ * GlassMic 设计 token——类 iOS / 极简 / 液态玻璃
  *
  * 不直接使用 Material 默认色板——避免"工具感太重"的灰蓝调。
  * 采用偏暖的中性灰 + 海蓝主色，与液态玻璃模糊背景搭配呈现"高级测试工具"质感。

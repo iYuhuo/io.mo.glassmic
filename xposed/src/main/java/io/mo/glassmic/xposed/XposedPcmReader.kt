@@ -3,6 +3,8 @@ package io.mo.glassmic.xposed
 import android.content.Context
 import android.net.Uri
 import android.os.ParcelFileDescriptor
+import android.os.Bundle
+import android.os.SystemClock
 import io.mo.glassmic.core.Constants
 import java.io.FileInputStream
 import java.io.InputStream
@@ -27,46 +29,84 @@ class XposedPcmReader(
 
     private val streamRef = AtomicReference<OpenStream?>()
     private val tempBuf = ByteArray(4096)
+    private val metrics = PcmReadMetrics()
+    private var lastMetricsReport = SystemClock.elapsedRealtime()
+    @Volatile private var retryAtMs = 0L
+    private var readFailurePending = false
+
+    private fun recordRead(wanted: Int, actual: Int, failed: Boolean = false) {
+        if (wanted <= 0) return
+        if (!failed && actual > 0 && readFailurePending) {
+            readFailurePending = false
+            XBridge.flushProviderFailures(context, context.packageName, "pcm.read")
+        }
+        val reads = metrics.read(wanted, actual, failed)
+        if (reads >= 50 || SystemClock.elapsedRealtime() - lastMetricsReport >= 1500L) reportMetrics()
+    }
+
+    private fun reportMetrics() {
+        val snapshot = metrics.drain() ?: return
+        lastMetricsReport = SystemClock.elapsedRealtime()
+        XBridge.reportPcmReadStats(context, Bundle().apply {
+            putInt("pid", android.os.Process.myPid())
+            putInt("reader_id", System.identityHashCode(this@XposedPcmReader))
+            putInt("sample_rate", sampleRate)
+            putInt("channels", channels)
+            putLong("reads", snapshot.reads)
+            putLong("requested_pcm16_bytes", snapshot.requested)
+            putLong("source_pcm16_bytes", snapshot.source)
+            putLong("zero_fill_pcm16_bytes", snapshot.zeroFill)
+            putLong("short_reads", snapshot.shortReads)
+            putLong("errors", snapshot.errors)
+            putDouble("rms_pcm16", snapshot.rms)
+            putInt("peak_pcm16", snapshot.peak)
+        })
+    }
 
     fun read(out: ByteBuffer, size: Int): Int {
-        val stream = ensureStream()?.input ?: return -1
+        val stream = ensureStream()?.input ?: run { recordRead(size, 0, failed = true); return -1 }
         var totalWritten = 0
         var remaining = size
         try {
             while (remaining > 0) {
                 val want = minOf(remaining, tempBuf.size)
                 val n = stream.read(tempBuf, 0, want)
-                if (n <= 0) {
-                    // 写端已关：丢掉死流，下次 ensureStream 会 open 新 pipe
-                    closeStream()
-                    break
-                }
+                if (n <= 0) { closeStream(); break }
                 out.put(tempBuf, 0, n)
+                metrics.samples(tempBuf, 0, n)
                 totalWritten += n
                 remaining -= n
             }
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
+            readFailurePending = true
+            XBridge.reportProviderFailure(context.packageName, "pcm.read", t.javaClass.simpleName)
+            retryAtMs = SystemClock.elapsedRealtime() + 2_000L
             closeStream()
+            recordRead(size, totalWritten, failed = true)
             return -1
         }
+        recordRead(size, totalWritten)
         return totalWritten
     }
 
     fun read(out: ByteArray, offset: Int, size: Int): Int {
-        val stream = ensureStream()?.input ?: return -1
+        val stream = ensureStream()?.input ?: run { recordRead(size, 0, failed = true); return -1 }
+        var totalRead = 0
         return try {
-            var totalRead = 0
             while (totalRead < size) {
                 val n = stream.read(out, offset + totalRead, size - totalRead)
-                if (n <= 0) {
-                    closeStream()
-                    break
-                }
+                if (n <= 0) { closeStream(); break }
+                metrics.samples(out, offset + totalRead, n)
                 totalRead += n
             }
+            recordRead(size, totalRead)
             totalRead
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
+            readFailurePending = true
+            XBridge.reportProviderFailure(context.packageName, "pcm.read", t.javaClass.simpleName)
+            retryAtMs = SystemClock.elapsedRealtime() + 2_000L
             closeStream()
+            recordRead(size, totalRead, failed = true)
             -1
         }
     }
@@ -107,12 +147,23 @@ class XposedPcmReader(
 
     private fun ensureStream(): OpenStream? {
         streamRef.get()?.let { return it }
+        val now = SystemClock.elapsedRealtime()
+        if (now < retryAtMs) return null
         val uri = Uri.parse(
             "content://${Constants.PROVIDER_PCM}/stream?sr=$sampleRate&ch=$channels"
         )
+        var openFailure = "NO_FILE_DESCRIPTOR"
         val pfd = runCatching {
             context.contentResolver.openFileDescriptor(uri, "r")
-        }.getOrNull() ?: return null
+        }.onFailure {
+            openFailure = it.javaClass.simpleName
+        }.getOrNull() ?: run {
+            XBridge.reportProviderFailure(context.packageName, "pcm.open", openFailure)
+            retryAtMs = now + 2_000L
+            return null
+        }
+        retryAtMs = 0L
+        XBridge.flushProviderFailures(context, context.packageName, "pcm.open")
         val open = OpenStream(pfd, FileInputStream(pfd.fileDescriptor))
         if (streamRef.compareAndSet(null, open)) return open
         runCatching { open.input.close() }
@@ -120,7 +171,10 @@ class XposedPcmReader(
         return streamRef.get()
     }
 
-    fun release() = closeStream()
+    fun release() {
+        closeStream()
+        reportMetrics()
+    }
 
     private fun closeStream() {
         streamRef.getAndSet(null)?.let {
