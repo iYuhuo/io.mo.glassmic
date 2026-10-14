@@ -48,8 +48,36 @@ class RuntimeProvider : ContentProvider() {
         recordPackageState(pkg, "last_query_ms", System.currentTimeMillis(), src.name)
         recordPing(pkg, selectionArgs?.getOrNull(1)?.toIntOrNull() ?: 0)
         val snap = resolver.configSnapshot()
-        return MatrixCursor(arrayOf("source", "group_id", "audio_id", "global_switch"))
-            .apply { addRow(arrayOf(src.name, "", "", if (snap.globalSwitch) 1 else 0)) }
+        val releaseToken = resolver.forceReleaseToken()
+        val inScope = resolver.isInModuleScope(pkg)
+        val blockUntil = resolver.recordingBlockUntilMs()
+        return MatrixCursor(
+            arrayOf(
+                "source",
+                "group_id",
+                "audio_id",
+                "global_switch",
+                "real_mic_mix",
+                "resolve_reason",
+                "force_release_token",
+                "in_scope",
+                "recording_block_until",
+            )
+        ).apply {
+            addRow(
+                arrayOf(
+                    src.name,
+                    "",
+                    "",
+                    if (snap.globalSwitch) 1 else 0,
+                    0,
+                    "runtime",
+                    releaseToken.toString(),
+                    if (inScope) 1 else 0,
+                    blockUntil.toString(),
+                )
+            )
+        }
     }
 
     override fun call(method: String, arg: String?, extras: Bundle?): Bundle? {
@@ -202,6 +230,15 @@ class RuntimeProvider : ContentProvider() {
                 }
                 return Bundle().apply { putBoolean("ok", true) }
             }
+            Constants.METHOD_FORCE_RELEASE_TOKEN -> {
+                val pkg = arg ?: extras?.getString("package") ?: callingPackage ?: ""
+                val resolver = entryPoint().resolver()
+                return Bundle().apply {
+                    putLong(Constants.KEY_FORCE_RELEASE_TOKEN, resolver.forceReleaseToken())
+                    putBoolean(Constants.KEY_IN_SCOPE, resolver.isInModuleScope(pkg))
+                    putLong(Constants.KEY_RECORDING_BLOCK_UNTIL, resolver.recordingBlockUntilMs())
+                }
+            }
         }
         return super.call(method, arg, extras)
     }
@@ -263,11 +300,16 @@ class RuntimeProvider : ContentProvider() {
     override fun delete(uri: Uri, selection: String?, selectionArgs: Array<out String>?): Int = 0
     override fun update(uri: Uri, values: ContentValues?, selection: String?, selectionArgs: Array<out String>?): Int = 0
 
-    private companion object {
+    companion object {
         private val statsLock = Any()
         private val lastPackageWrites = LinkedHashMap<Pair<String, String>, Pair<Long, String?>>()
         @Volatile private var lastPingWrite = 0L
         private const val PING_WRITE_THROTTLE_MS = 3000L
         private const val DIAG_TIMELINE_LIMIT = 160
+
+        fun notifyForceReleaseChanged(ctx: Context) {
+            val uri = Uri.parse("content://${Constants.PROVIDER_RUNTIME}/resolve")
+            runCatching { ctx.contentResolver.notifyChange(uri, null) }
+        }
     }
 }

@@ -55,17 +55,7 @@ class LegacyXposedEntry : IXposedHookZygoteInit, IXposedHookLoadPackage {
                         if (XposedHookGate.shouldSkipPackage(pkg)) return
 
                         val ctx = appCtx.applicationContext ?: appCtx
-                        runCatching {
-                            XBridge.currentPackage = pkg
-                            XBridge.apiVersion = 82
-                            // 同 API 101：不再在 attach 阶段主动 ping RuntimeProvider，避免无故拉起本进程。
-                            LegacyAudioRecordHook.install(ctx, pkg)
-                            val nativeOk = NativeAAudioHook.install(ctx, pkg)
-                            XposedBridge.log("GlassMic-Legacy: hooks installed in $pkg native=$nativeOk")
-                        }.onFailure {
-                            XposedBridge.log("GlassMic-Legacy: install hooks in $pkg failed: ${it.message}")
-                            XposedBridge.log(it)
-                        }
+                        HookBootstrap.start(ctx, pkg, api = null)
                     }
                 }
             )

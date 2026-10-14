@@ -33,6 +33,9 @@ object AppConfigSerializer : Serializer<AppConfig> {
                 .setOpacity(0.85f)
                 .setSize(FloatingSize.STANDARD)
                 .setWaveformOpacity(0.6f)   // 波形悬浮窗默认半透明
+                .setLocalMonitor(false)
+                .setRealMicMix(false)
+                .setOutputVolume(1.0f)
         )
         .setAppearance(
             Appearance.newBuilder()

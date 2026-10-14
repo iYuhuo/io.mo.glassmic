@@ -2,8 +2,8 @@ package io.mo.glassmic.core
 
 object Constants {
     const val APP_PACKAGE = "io.mo.glassmic"
-    const val APP_NAME = "GlassMic"
-    const val APP_NAME_ZH = "璃麦"
+    const val APP_NAME = "yuhuo"
+    const val APP_NAME_ZH = "yuhuo"
 
     // 旧版共享配置名；当前 Xposed 侧优先通过 RuntimeProvider 实时查询
     const val XSHARED_PREFS_NAME = "glassmic_shared"
@@ -30,6 +30,17 @@ object Constants {
     const val METHOD_PCM_READ_STATS = "pcm_read_stats"
     const val METHOD_AUDIO_INTERCEPT = "audio_intercept"
     const val METHOD_AUDIO_DIAG_EVENT = "audio_diag_event"
+
+    /** 查询当前「强制解除麦克风占用」序号（hook 进程轮询 / ContentObserver 用） */
+    const val METHOD_FORCE_RELEASE_TOKEN = "force_release_token"
+    const val KEY_FORCE_RELEASE_TOKEN = "token"
+    const val KEY_IN_SCOPE = "in_scope"
+    const val KEY_RECORDING_BLOCK_UNTIL = "recording_block_until"
+    /**
+     * 持续禁录哨兵值：`recordingBlockUntilMs` 取此值表示直到用户再次点击才解除。
+     * Hook 侧用 `now < blockUntil` 判断，墙钟永远到不了 [Long.MAX_VALUE]。
+     */
+    const val MIC_RELEASE_BLOCK_INDEFINITE_UNTIL = Long.MAX_VALUE
 
     // ContentProvider authorities
     const val PROVIDER_RUNTIME = "io.mo.glassmic.provider.runtime"

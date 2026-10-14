@@ -145,6 +145,11 @@ message FloatingWindow {
   // 展开面板的自定义尺寸（dp），拖动面板右边缘 / 下边缘 / 右下角调整；0 表示默认（宽 340、高自适应）
   int32 panel_width_dp = 8;
   int32 panel_height_dp = 9;
+  // yuhuo：悬浮窗本地耳返与注入音量（字段号避开上游 8/9）
+  bool local_monitor = 10;
+  bool real_mic_mix = 11;
+  // 虚拟音源注入音量倍率，1.0 = 100%，范围建议 0.0~2.0
+  float output_volume = 12;
 }
 
 enum FloatingMode {

@@ -166,11 +166,29 @@ object XBridge {
         val cached = cachedSource
         if (cachedPkg == callerPackage && cached != null && !queryDue) return cached
 
-        val src = queryProvider(ctx, callerPackage)
-        cachedSource = src
+        val row = queryProvider(ctx, callerPackage)
+        cachedSource = row.source
         cachedPkg = callerPackage
         queryPolicy.onQuery(SystemClock.uptimeMillis(), lastReachable)
-        return src
+        MicForceRelease.applyRemoteState(
+            token = row.forceReleaseToken,
+            scoped = row.inScope,
+            blockUntil = row.blockUntilMs,
+            reason = "resolve",
+        )
+        return row.source
+    }
+
+    /** 带原因说明的决策（供 HookBootstrap 诊断日志）。 */
+    fun queryResolveExplanation(ctx: Context, callerPackage: String): Pair<SourceType, String> {
+        val row = queryProvider(ctx, callerPackage)
+        MicForceRelease.applyRemoteState(
+            token = row.forceReleaseToken,
+            scoped = row.inScope,
+            blockUntil = row.blockUntilMs,
+            reason = "explain",
+        )
+        return row.source to row.reason
     }
 
     /** Keep evidence locally: trying to report a failed Provider through itself would recurse. */
@@ -220,7 +238,15 @@ object XBridge {
         }
     }
 
-    private fun queryProvider(ctx: Context, pkg: String): SourceType {
+    private data class ResolveRow(
+        val source: SourceType,
+        val reason: String,
+        val forceReleaseToken: Long,
+        val inScope: Boolean,
+        val blockUntilMs: Long,
+    )
+
+    private fun queryProvider(ctx: Context, pkg: String): ResolveRow {
         val uri = Uri.parse("content://${Constants.PROVIDER_RUNTIME}/resolve")
         // selectionArgs[1] 带上 api 版本，供 RuntimeProvider 顺手更新「模块已激活」诊断状态，
         // 免去在注入进程 attach 阶段单独 ping（那是复活的主要来源）。
@@ -229,24 +255,45 @@ object XBridge {
             if (c == null) {
                 lastReachable = false
                 reportProviderFailure(pkg, "runtime.query", "NULL_CURSOR")
-                return SourceType.REAL_MIC
+                return ResolveRow(SourceType.REAL_MIC, "provider_unreachable", 0L, false, 0L)
             }
             c.use {
                 if (!it.moveToFirst()) {
                     lastReachable = false
                     reportProviderFailure(pkg, "runtime.query", "EMPTY_CURSOR")
-                    return SourceType.REAL_MIC
+                    return ResolveRow(SourceType.REAL_MIC, "query_empty", 0L, false, 0L)
                 }
                 val source = SourceType.valueOf(it.getString(0))
+                fun longAt(i: Int): Long = when {
+                    it.columnCount <= i -> 0L
+                    it.getType(i) == android.database.Cursor.FIELD_TYPE_INTEGER -> it.getLong(i)
+                    it.getType(i) == android.database.Cursor.FIELD_TYPE_STRING ->
+                        it.getString(i)?.toLongOrNull() ?: 0L
+                    else -> it.getString(i)?.toLongOrNull() ?: 0L
+                }
+                fun intAt(i: Int): Int = when {
+                    it.columnCount <= i -> 0
+                    it.getType(i) == android.database.Cursor.FIELD_TYPE_INTEGER -> it.getInt(i)
+                    it.getType(i) == android.database.Cursor.FIELD_TYPE_STRING ->
+                        it.getString(i)?.toIntOrNull() ?: 0
+                    else -> 0
+                }
+                val reason = if (it.columnCount > 5) it.getString(5) ?: "unknown" else "unknown"
                 if (!lastReachable) Log.i("GlassMic-Provider", "runtime access recovered package=$pkg")
                 lastReachable = true
                 flushProviderFailures(ctx, pkg, "runtime.")
-                source
+                ResolveRow(
+                    source = source,
+                    reason = reason,
+                    forceReleaseToken = longAt(6),
+                    inScope = intAt(7) != 0,
+                    blockUntilMs = longAt(8),
+                )
             }
         }.getOrElse {
             lastReachable = false
             reportProviderFailure(pkg, "runtime.query", it.javaClass.simpleName)
-            SourceType.REAL_MIC
+            ResolveRow(SourceType.REAL_MIC, "query_error", 0L, false, 0L)
         }
     }
 }

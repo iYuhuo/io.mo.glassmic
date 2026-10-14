@@ -381,12 +381,30 @@ object NativeAAudioHook {
         else -> "unknown"
     }
 
+    /**
+     * 一键解除占用：关掉本进程 native PCM fd，并对跟踪到的 AAudio/OpenSL 输入请求停止。
+     * 未装 native hook 时 no-op。
+     */
+    fun forceReleaseAll() {
+        runCatching {
+            nativeSetPcmFd(-1, 0, 0)
+            hasPushedFd = false
+            pushedFdSr = 0
+            pushedFdCh = 0
+            nativeForceReleaseInputs()
+        }.onFailure {
+            android.util.Log.w(TAG, "forceReleaseAll failed: ${it.message}")
+        }
+    }
+
     // =================== JNI ===================
     @JvmStatic private external fun nativeInstall(): Int
     @JvmStatic private external fun nativeSetDecision(decision: Int)
     @JvmStatic private external fun nativeSetPcmFd(fd: Int, sampleRate: Int, channels: Int)
+    @JvmStatic private external fun nativeHasPcmFd(): Boolean
     @JvmStatic private external fun nativeDrainStats(): LongArray?
     @JvmStatic private external fun nativeDupFd(fd: java.io.FileDescriptor): Int
     @JvmStatic private external fun nativeSetTapFd(fd: Int)
     @JvmStatic private external fun nativeTapActive(): Boolean
+    @JvmStatic private external fun nativeForceReleaseInputs()
 }

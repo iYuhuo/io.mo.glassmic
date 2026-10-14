@@ -16,6 +16,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 #include <utility>
+#include <vector>
 
 namespace glass {
 
@@ -335,6 +336,26 @@ bool install_opensl_hook() {
 
     LOGI("slCreateEngine hook installed");
     return true;
+}
+
+void force_stop_opensl_recorders() {
+    std::vector<const void*> snapshot;
+    {
+        std::lock_guard<std::mutex> lk(g_mutex);
+        snapshot.assign(g_recorder_objs.begin(), g_recorder_objs.end());
+    }
+    int stopped = 0;
+    for (const void* raw : snapshot) {
+        auto obj = reinterpret_cast<SLObjectItf>(const_cast<void*>(raw));
+        if (!obj || !*obj) continue;
+        SLRecordItf rec = nullptr;
+        SLresult r = (*obj)->GetInterface(obj, SL_IID_RECORD, &rec);
+        if (r != SL_RESULT_SUCCESS || !rec) continue;
+        r = (*rec)->SetRecordState(rec, SL_RECORDSTATE_STOPPED);
+        if (r == SL_RESULT_SUCCESS) stopped++;
+        LOGI("OpenSL force stop recorder=%p rc=%d", raw, static_cast<int>(r));
+    }
+    LOGI("force_stop_opensl_recorders stopped=%d / %zu", stopped, snapshot.size());
 }
 
 } // namespace glass

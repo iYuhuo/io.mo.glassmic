@@ -77,6 +77,13 @@ class EffectiveSourceResolver @Inject constructor(
         if (!rt.enabled) {
             return Triple(SourceType.REAL_MIC, "SERVICE_DISABLED", "运行态/前台服务未启动 (Service disabled)")
         }
+        if (rt.realMicPassThrough) {
+            return Triple(SourceType.REAL_MIC, "REAL_MIC_PASSTHROUGH", "真麦透传已开启")
+        }
+        // 暂停时 hook 透传真实麦
+        if (rt.paused) {
+            return Triple(SourceType.REAL_MIC, "PAUSED", "播放已暂停，透传真实麦克风")
+        }
         // 8. 当前运行态决定的音源
         val eff = when (rt.currentSourceType) {
             SourceType.TTS -> SourceType.FILE
@@ -95,4 +102,24 @@ class EffectiveSourceResolver @Inject constructor(
     }
 
     fun configSnapshot(): ConfigSnapshot = configStore.snapshotBlocking()
+
+    /** 跨进程下发的强制解除麦克风占用序号（单调递增）。 */
+    fun forceReleaseToken(): Long = runtime.value.forceReleaseToken
+
+    /** 录音封锁截止时间（墙钟 ms）；0 表示未封锁。 */
+    fun recordingBlockUntilMs(): Long = runtime.recordingBlockUntilMs()
+
+    /**
+     * 是否落在模块作用域内（与虚拟麦注入的 ScopeMatcher 一致）。
+     * 解除占用 / 短暂禁录只作用于这些包。
+     */
+    fun isInModuleScope(callerPackage: String): Boolean {
+        if (callerPackage == Constants.APP_PACKAGE) return false
+        val snap = configStore.snapshotBlocking()
+        if (snap.audioPolicyBackend) {
+            return callerPackage.isNotBlank() &&
+                (snap.audioPolicyAllApps || callerPackage in snap.audioPolicyPackages)
+        }
+        return ScopeMatcher.matches(callerPackage, snap)
+    }
 }

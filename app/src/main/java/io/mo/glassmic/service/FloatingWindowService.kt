@@ -1,30 +1,24 @@
 package io.mo.glassmic.service
 
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
-import android.content.res.Configuration
 import android.graphics.PixelFormat
-import android.graphics.Rect
 import android.os.Build
 import android.os.IBinder
 import android.provider.Settings
-import android.util.DisplayMetrics
 import android.view.Gravity
-import android.view.WindowInsets
+import android.view.MotionEvent
 import android.view.WindowManager
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import dagger.hilt.android.AndroidEntryPoint
 import io.mo.glassmic.R
-import io.mo.glassmic.core.Constants
 import io.mo.glassmic.core.model.SourceType
 import io.mo.glassmic.data.audio.FloatingIconStore
 import io.mo.glassmic.data.audio.PlaybackController
@@ -32,14 +26,13 @@ import io.mo.glassmic.data.config.AppLocale
 import io.mo.glassmic.data.config.ConfigStore
 import io.mo.glassmic.data.db.AudioDao
 import io.mo.glassmic.data.runtime.RuntimeStateHolder
-import io.mo.glassmic.data.runtime.VolumeShortcutRepository
 import io.mo.glassmic.log.GlassLog
 import io.mo.glassmic.proto.AppConfig
 import io.mo.glassmic.proto.FloatingSize
-import io.mo.glassmic.ui.theme.GlassThemeContent
+import io.mo.glassmic.ui.theme.LocalGlassEnabled
+import io.mo.glassmic.ui.theme.LocalReduceMotion
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -49,8 +42,12 @@ import javax.inject.Inject
  *
  * 三态：球态 / 迷你播放条 / 选曲菜单，全部渲染在同一个挂到 WindowManager 的 ComposeView 里。
  * 手势：
- * - 未播放点击球 → 选曲菜单；播放中点击球 → 迷你播放条
- * - 迷你条内「换音源」→ 选曲菜单；选中片段 → 立即播放并回到迷你条
+ * - 点击球 → 恢复上次收起前的界面；尚无记录时：播放中开迷你条，否则开选曲
+ * - 音频库 / TTS 等大面板点窗外 → 收起为球（并记下当前界面）；迷你条不因点外收起
+ * - 展开态始终 NOT_TOUCH_MODAL，窗外可操作下层 App
+ * - 迷你条内「换音源」→ 音频库（若在播 TTS 则恢复上次音源并暂停）；「TTS」直达文字转语音
+ * - 选中片段 → 设为当前音源（暂停，不自动播）并回到迷你条
+ * - TTS 播放成功 → 留在 TTS 面板（面板内可暂停/继续，不跳迷你条）
  * - 拖动球移动，松手贴边
  */
 @AndroidEntryPoint
@@ -61,19 +58,21 @@ class FloatingWindowService : LifecycleService() {
     @Inject lateinit var configStore: ConfigStore
     @Inject lateinit var audioDao: AudioDao
     @Inject lateinit var iconStore: FloatingIconStore
-    @Inject lateinit var volumeShortcut: VolumeShortcutRepository
 
     private var windowManager: WindowManager? = null
     private var host: FloatingOverlayHost? = null
     private var params: WindowManager.LayoutParams? = null
 
     private val modeFlow = MutableStateFlow(FloatMode.BALL)
-    private val overlayBoundsFlow = MutableStateFlow(Rect())
-    private val clampRunnable = Runnable { clampToBounds() }
+
+    /**
+     * 上次展开态界面。收起为球时写入；再点球优先还原，避免总是跳回默认选曲/迷你条。
+     */
+    private var lastExpandedMode: FloatMode? = null
 
     /**
      * 悬浮球的锚点位置（用户拖动决定）。
-     * 展开态（菜单/迷你条/TTS）面板比球宽，靠右时会被 [clampToBounds] 临时左移避让屏幕边缘，
+     * 展开态（菜单/迷你条/TTS）面板比球宽，靠右时会被 [clampExpandedX] 临时左移避让屏幕边缘，
      * 但该偏移不写回锚点；收起时按锚点还原，否则球会一次次被"推"到屏幕左侧。
      */
     private var anchorX = DEFAULT_X
@@ -88,24 +87,11 @@ class FloatingWindowService : LifecycleService() {
         }
         showOverlay()
         runtime.setFloatingVisible(true)
-        // 音量键快捷操作只在悬浮窗存活期间布防，开关变化即时生效
-        lifecycleScope.launch {
-            configStore.flow
-                .map { it.shortcuts.volumeKeysEnabled }
-                .distinctUntilChanged()
-                .collect { applyVolumeShortcut(it) }
-        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
         return START_NOT_STICKY
-    }
-
-    override fun onConfigurationChanged(newConfig: Configuration) {
-        super.onConfigurationChanged(newConfig)
-        refreshOverlayBounds()
-        host?.view?.requestApplyInsets()
     }
 
     override fun onBind(intent: Intent): IBinder? {
@@ -114,82 +100,13 @@ class FloatingWindowService : LifecycleService() {
     }
 
     override fun onDestroy() {
-        // 先撤防再拆窗口：system_server 侧一旦撤防就立刻停止拦截音量键，
-        // 不会留下「悬浮窗已关、音量键却还发涩」的空窗期。
-        applyVolumeShortcut(false)
         host?.let { h ->
-            h.view.removeCallbacks(clampRunnable)
             runCatching { windowManager?.removeView(h.view) }
             h.onDestroy()
         }
         host = null
         runtime.setFloatingVisible(false)
         super.onDestroy()
-    }
-
-    // ============ 音量键双击快捷操作 ============
-
-    /**
-     * 接收 Xposed 侧（system_server）检测到的双击。
-     *
-     * 必须注册为 EXPORTED 才收得到来自 system_server 的广播，因此用 token 校验来源——
-     * token 由本进程随机生成、写进只有模块读得到的 remote preferences，第三方 App 伪造不出来。
-     */
-    private val shortcutReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action != Constants.ACTION_VOLUME_SHORTCUT) return
-            if (!volumeShortcut.verifyToken(intent.getStringExtra(Constants.EXTRA_SHORTCUT_TOKEN))) {
-                GlassLog.b("VolKey") { "丢弃 token 不匹配的快捷操作广播" }
-                return
-            }
-            when (intent.getStringExtra(Constants.EXTRA_SHORTCUT_ACTION)) {
-                Constants.SHORTCUT_PLAY -> onShortcutPlay()
-                Constants.SHORTCUT_PAUSE -> playback.pause()
-            }
-        }
-    }
-
-    private var shortcutArmed = false
-
-    private fun applyVolumeShortcut(enabled: Boolean) {
-        if (enabled == shortcutArmed) return
-        if (enabled) {
-            val filter = IntentFilter(Constants.ACTION_VOLUME_SHORTCUT)
-            val registered = runCatching {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    registerReceiver(shortcutReceiver, filter, Context.RECEIVER_EXPORTED)
-                } else {
-                    @Suppress("UnspecifiedRegisterReceiverFlag")
-                    registerReceiver(shortcutReceiver, filter)
-                }
-            }.onFailure {
-                GlassLog.b("VolKey") { "注册快捷操作接收器失败: ${it.message}" }
-            }.isSuccess
-            if (!registered) return
-            shortcutArmed = true
-            // 先注册后布防：布防之后模块才会开始发广播，不会有收不到的一瞬
-            volumeShortcut.setArmed(true)
-        } else {
-            volumeShortcut.setArmed(false)
-            runCatching { unregisterReceiver(shortcutReceiver) }
-            shortcutArmed = false
-        }
-    }
-
-    /**
-     * 双击音量上键 = 播放。
-     *
-     * 冷启动后还没选过音源时（运行态仍是默认的 REAL_MIC），先把上次持久化的片段装回来，
-     * 否则 resume() 无声可出，用户会以为快捷键没反应。
-     */
-    private fun onShortcutPlay() {
-        lifecycleScope.launch {
-            val src = runtime.flow.value.currentSourceType
-            if (src != SourceType.FILE && src != SourceType.TTS) {
-                playback.restorePersistedClip()
-            }
-            playback.resume()
-        }
     }
 
     private fun showOverlay() {
@@ -206,8 +123,7 @@ class FloatingWindowService : LifecycleService() {
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             type,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            ballWindowFlags(),
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
@@ -220,55 +136,59 @@ class FloatingWindowService : LifecycleService() {
         // 这里手动包一层 Locale Context 传给 ComposeView，保证悬浮窗文案也能正确显示。
         val overlayHost = FloatingOverlayHost(AppLocale.wrap(this)).also { it.onCreate() }
         host = overlayHost
-        refreshOverlayBounds()
-        overlayHost.view.setOnApplyWindowInsetsListener { _, insets ->
-            refreshOverlayBounds(insets)
-            insets
-        }
-        // 等 Compose 完成实际测量后再约束位置；分组加载、字号变化和旋转都可能改变高度。
-        overlayHost.view.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
-            if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) {
-                scheduleClampToBounds()
+        // 大面板点窗外收起（迷你条保留，方便边用其它 App 边控制播放）
+        // FLAG_WATCH_OUTSIDE_TOUCH + NOT_TOUCH_MODAL：触摸仍落到下层 App
+        overlayHost.view.setOnTouchListener { _, event ->
+            if (event.action == MotionEvent.ACTION_OUTSIDE) {
+                when (modeFlow.value) {
+                    FloatMode.MENU, FloatMode.TTS, FloatMode.TTS_SETTINGS -> setMode(FloatMode.BALL)
+                    else -> Unit
+                }
             }
+            false
         }
         overlayHost.setContent {
-            val cfgState = configStore.flow.collectAsState(initial = AppConfig.getDefaultInstance())
-            val appearance = cfgState.value.appearance
-            // 悬浮窗不走 GlassMicTheme（需要 ViewModel），直接用同一套主题外壳：跟随 App 的深浅色与「卡片透明」设置
-            GlassThemeContent(appearance.theme, appearance.glassEffect, appearance.reduceMotion) {
+            // 悬浮窗以前只包了裸 MaterialTheme{}，Slider/Switch 会用 Material3 默认紫色，
+            // 和面板里的绿色 Accent 打架。挂上 OverlayColorScheme 后它们自动跟随主色。
+            MaterialTheme(colorScheme = OverlayColorScheme) {
                 val rt by runtime.flow.collectAsState()
-                val cfg by cfgState
+                val cfg by configStore.flow.collectAsState(initial = AppConfig.getDefaultInstance())
                 val groups by audioDao.observeGroups().collectAsState(initial = emptyList())
                 val allClips by audioDao.observeAllClips().collectAsState(initial = emptyList())
                 val mode by modeFlow.collectAsState()
-                val overlayBounds by overlayBoundsFlow.collectAsState()
-                val density = LocalDensity.current
                 val ttsGen by playback.ttsGen.collectAsState()
-                val ttsPreviewing by playback.ttsPreviewing.collectAsState()
                 val ttsDelayRemainingMs by playback.ttsDelayRemainingMs.collectAsState()
+                val localMonitorRuntime by playback.localMonitorEnabled.collectAsState()
+                val generatedTtsText by playback.generatedTtsText.collectAsState()
 
-                val activeFile = (rt.currentSourceType == SourceType.FILE || rt.currentSourceType == SourceType.TTS) && rt.enabled && !rt.safeMode
+                val activeFile = (rt.currentSourceType == SourceType.FILE || rt.currentSourceType == SourceType.TTS) &&
+                    rt.enabled && !rt.safeMode
+                // 非虚拟音源（真麦）或已暂停 → 显示 ▶；仅虚拟音源播放中显示 ⏸
+                val showPaused = !activeFile || rt.paused
                 val currentId = cfg.currentAudioId
-                val currentName = if (rt.currentSourceType == SourceType.TTS) stringResource(R.string.source_tts)
-                                  else allClips.firstOrNull { it.id == currentId }?.displayName
+                val playingFileId = rt.currentAudioId.takeIf {
+                    rt.currentSourceType == SourceType.FILE && !it.isNullOrBlank()
+                }
+                val highlightClipId = playingFileId ?: currentId.takeIf { it.isNotBlank() }
+                val currentName = when (rt.currentSourceType) {
+                    SourceType.TTS -> getString(R.string.source_tts)
+                    SourceType.FILE -> allClips.firstOrNull { it.id == (playingFileId ?: currentId) }?.displayName
+                    SourceType.REAL_MIC -> getString(R.string.source_real_mic)
+                    else -> allClips.firstOrNull { it.id == currentId }?.displayName
+                }
 
+                // 悬浮窗不走 GlassMicTheme，这两个外观开关得在这里手动注入
+                CompositionLocalProvider(
+                    LocalGlassEnabled provides cfg.appearance.glassEffect,
+                    LocalReduceMotion provides cfg.appearance.reduceMotion,
+                ) {
                 FloatingBubbleRoot(
-                    playbackPolicy = cfg.playbackPolicy,
-                    onSetPlaybackPolicy = { policy ->
-                        lifecycleScope.launch { configStore.update { it.setPlaybackPolicy(policy) } }
-                    },
                     mode = mode,
-                    panelMaxWidth = with(density) { overlayBounds.width().toDp() },
-                    panelMaxHeight = with(density) { overlayBounds.height().toDp() },
                     activeFile = activeFile,
-                    paused = rt.paused,
-                    isStreaming = rt.isStreaming,
-                    audioMonitorEnabled = cfg.audioMonitor.enabled,
-                    onToggleAudioMonitor = ::toggleAudioMonitor,
+                    paused = showPaused,
                     positionMs = rt.positionMs,
                     durationMs = rt.durationMs,
                     currentName = currentName,
-                    currentGroupId = cfg.currentGroupId.takeIf { it.isNotBlank() },
                     sizeDp = sizeToDp(cfg.floatingWindow.size),
                     iconPath = cfg.floatingWindow.customIconPath.takeIf { it.isNotBlank() }
                         ?.let { iconStore.iconFile(it).absolutePath },
@@ -276,39 +196,67 @@ class FloatingWindowService : LifecycleService() {
                     groups = groups.map { FloatGroupItem(it.id, it.emoji, it.name) },
                     clipsProvider = { gid ->
                         audioDao.observeClipsInGroup(gid).map { list ->
-                            list.map { FloatClipItem(it.id, it.displayName, it.id == currentId, it.durationMs) }
+                            list.map { FloatClipItem(it.id, it.displayName, it.id == highlightClipId) }
                         }
                     },
-                    onBallTap = { onBallTap(rt.currentSourceType == SourceType.TTS) },
-                    onTogglePause = { playback.togglePause() },
+                    onBallTap = { onBallTap(activeFile) },
+                    onTogglePause = {
+                        // 仅虚拟音源在播/暂停时切换；真麦态不再自动重播 TTS
+                        // （播完瞬间 ▶ 与点击竞态会听到「第二次开头」）
+                        if (activeFile) playback.togglePause()
+                    },
                     onSeek = { frac -> onSeek(frac, rt.durationMs) },
-                    onOpenMenu = { setMode(FloatMode.MENU) },
+                    onOpenMenu = { onOpenLibrary() },
                     onCollapse = { setMode(FloatMode.BALL) },
                     onSelectClip = { clipId -> onSelectClip(clipId) },
-                    onOpenTts = { setMode(FloatMode.TTS) },
+                    onOpenTts = { onOpenTtsPanel() },
+                    onOpenVirtualSource = { onOpenVirtualSource() },
                     ttsGenerating = ttsGen == PlaybackController.TtsGen.GENERATING,
                     ttsReady = ttsGen == PlaybackController.TtsGen.READY,
                     ttsFailed = ttsGen == PlaybackController.TtsGen.FAILED,
-                    ttsPreviewing = ttsPreviewing,
+                    generatedTtsText = generatedTtsText,
                     onGenerateTts = { text -> onGenerateTts(text) },
-                    onTogglePreviewTts = { onTogglePreviewTts() },
-                    onPlayTts = { onPlayTts() },
+                    onPlayTts = { text -> onPlayTts(text) },
                     ttsProgressBarEnabled = cfg.tts.progressBarEnabled,
                     ttsActive = rt.currentSourceType == SourceType.TTS,
+                    ttsPlaybackPolicy = cfg.tts.playbackPolicy,
                     onOpenTtsSettings = { setMode(FloatMode.TTS_SETTINGS) },
                     onToggleTtsProgressBar = { enabled -> onToggleTtsProgressBar(enabled) },
+                    onSetTtsPlaybackPolicy = { policy -> onSetTtsPlaybackPolicy(policy) },
                     ttsDelayMs = cfg.tts.delayMs,
                     onSetTtsDelay = { ms -> onSetTtsDelay(ms) },
                     ttsDelayRemainingMs = ttsDelayRemainingMs,
                     onCancelDelayedTts = { onCancelDelayedTts() },
                     onSeekTts = { frac -> onSeek(frac, rt.durationMs) },
                     onCloseTtsSettings = { setMode(FloatMode.TTS) },
+                    localMonitor = localMonitorRuntime,
+                    // 优先用运行时音量，避免拖动中/刚调完时 UI 与真实增益脱节
+                    outputVolume = playback.outputVolumeBlocking(),
+                    onToggleLocalMonitor = { enabled ->
+                        lifecycleScope.launch { playback.setLocalMonitorEnabled(enabled) }
+                    },
+                    onOutputVolumeChange = { vol -> playback.setOutputVolumeRuntime(vol) },
+                    onOutputVolumeChangeFinished = { vol ->
+                        lifecycleScope.launch { playback.setOutputVolume(vol) }
+                    },
+                    recordingBlocked = rt.recordingBlockUntilMs > 0L &&
+                        System.currentTimeMillis() < rt.recordingBlockUntilMs,
+                    onReleaseMicOccupation = releaseMic@{
+                        // 冷却期内重复点击直接忽略
+                        if (releaseMicJob?.isActive == true) return@releaseMic
+                        releaseMicJob = lifecycleScope.launch {
+                            val result = playback.forceReleaseMicOccupation()
+                            android.widget.Toast.makeText(
+                                this@FloatingWindowService,
+                                result.message,
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    },
                     onDragBy = { dx, dy -> onDragBy(dx, dy) },
                     onDragEnd = { onDragEnd() },
-                    panelWidthDp = cfg.floatingWindow.panelWidthDp,
-                    panelHeightDp = cfg.floatingWindow.panelHeightDp,
-                    onResizePanel = { w, h -> onResizePanel(w, h) },
                 )
+                }
             }
         }
         runCatching { wm.addView(overlayHost.view, lp) }
@@ -316,48 +264,81 @@ class FloatingWindowService : LifecycleService() {
     }
 
     // ============ 手势 / 交互回调 ============
-    /** 轻点悬浮球直接展开面板；当前音源是文字转语音时停在 TTS 页。 */
-    private fun onBallTap(ttsSource: Boolean) {
-        setMode(if (ttsSource) FloatMode.TTS else FloatMode.MENU)
+    private fun onBallTap(activeFile: Boolean) {
+        val restore = lastExpandedMode
+        setMode(
+            when {
+                restore != null -> restore
+                activeFile -> FloatMode.MINI_BAR
+                else -> FloatMode.MENU
+            }
+        )
     }
 
-    private fun toggleAudioMonitor() {
+    /** 打开音频库选曲（迷你条「换音源」）。 */
+    private fun onOpenLibrary() {
+        setMode(FloatMode.MENU)
+    }
+
+    /**
+     * TTS → 当前虚拟音源：恢复上次选中的文件音源（暂停），进入迷你条。
+     * 若还没有选过音源，再落到选曲界面。
+     */
+    private fun onOpenVirtualSource() {
+        cancelTtsJobs()
         lifecycleScope.launch {
-            configStore.update {
-                val cur = it.audioMonitor
-                it.setAudioMonitor(cur.toBuilder().setEnabled(!cur.enabled).build())
-            }
+            val ok = playback.switchToLibrarySource()
+            setMode(if (ok) FloatMode.MINI_BAR else FloatMode.MENU)
         }
     }
 
-    private fun onTogglePreviewTts() {
-        lifecycleScope.launch {
-            playback.togglePreviewTts()
+    /** 打开 TTS：暂停当前文件音源，保证不会和 TTS「同时在播」。 */
+    private fun onOpenTtsPanel() {
+        setMode(FloatMode.TTS)
+        if (runtime.value.currentSourceType == SourceType.FILE && !playback.isPaused) {
+            playback.pause()
         }
     }
 
     private fun onSelectClip(clipId: String) {
+        cancelTtsJobs()
         lifecycleScope.launch {
-            val ok = playback.setCurrentClip(clipId)
-            // 选中后停留在音频库面板，当前项高亮即为反馈
-            if (!ok) GlassLog.b("Float") { "选中片段失败: $clipId" }
+            // 选中即设为当前音源，但暂停——与 TTS 互斥，由用户在迷你条点播放
+            val ok = playback.setCurrentClip(clipId, startPaused = true)
+            if (ok) setMode(FloatMode.MINI_BAR)
+            else GlassLog.b("Float") { "选中片段失败: $clipId" }
         }
     }
 
+    private var ttsGenerateJob: Job? = null
+    private var releaseMicJob: Job? = null
+    /** 延时播放期间持有倒计时协程，供再次点击时取消。 */
+    private var ttsPlayJob: Job? = null
+
+    private fun cancelTtsJobs() {
+        ttsPlayJob?.cancel()
+        ttsPlayJob = null
+        ttsGenerateJob?.cancel()
+        ttsGenerateJob = null
+        playback.clearTtsDelayCountdown()
+    }
+
     private fun onGenerateTts(text: String) {
-        lifecycleScope.launch {
+        ttsGenerateJob?.cancel()
+        ttsGenerateJob = lifecycleScope.launch {
             val ok = playback.generateTts(text)
             if (!ok) GlassLog.b("Float") { "TTS 生成失败（文本为空或引擎不可用）" }
         }
     }
 
-    /** 延时播放期间持有倒计时协程，供再次点击时取消。 */
-    private var ttsPlayJob: Job? = null
-
-    private fun onPlayTts() {
+    private fun onPlayTts(text: String) {
+        // 取消上一次延时/生成/播放，避免叠两次；文案变了会先生成再播
+        ttsPlayJob?.cancel()
+        ttsGenerateJob?.cancel()
         ttsPlayJob = lifecycleScope.launch {
-            val ok = playback.playGeneratedTts()
-            if (!ok) GlassLog.b("Float") { "TTS 播放失败（尚未生成）" }
+            val ok = playback.playTts(text)
+            // 留在 TTS 面板：播放按钮会变成暂停/继续，跳迷你条反而打断编辑/重播
+            if (!ok) GlassLog.b("Float") { "TTS 播放失败（文本为空或生成失败）" }
         }
     }
 
@@ -376,6 +357,14 @@ class FloatingWindowService : LifecycleService() {
         }
     }
 
+    private fun onSetTtsPlaybackPolicy(policy: io.mo.glassmic.proto.PlaybackPolicy) {
+        lifecycleScope.launch {
+            configStore.update {
+                it.setTts(it.tts.toBuilder().setPlaybackPolicy(policy).build())
+            }
+        }
+    }
+
     private fun onSetTtsDelay(delayMs: Int) {
         lifecycleScope.launch {
             configStore.update {
@@ -384,21 +373,15 @@ class FloatingWindowService : LifecycleService() {
         }
     }
 
+    /** 进度条松手后的唯一 seek；拖动过程中不应调用（见 SeekBar）。 */
+    private var seekJob: Job? = null
+
     private fun onSeek(frac: Float, durationMs: Long) {
         if (durationMs <= 0) return
         val target = (durationMs * frac).toLong().coerceIn(0L, durationMs)
-        lifecycleScope.launch { playback.seekTo(target) }
-    }
-
-    /** 保存展开面板尺寸（dp）；0 表示恢复默认。 */
-    private fun onResizePanel(widthDp: Int, heightDp: Int) {
-        lifecycleScope.launch {
-            configStore.update {
-                it.setFloatingWindow(
-                    it.floatingWindow.toBuilder().setPanelWidthDp(widthDp).setPanelHeightDp(heightDp).build()
-                )
-            }
-        }
+        runtime.setPosition(target)
+        seekJob?.cancel()
+        seekJob = lifecycleScope.launch { playback.seekTo(target) }
     }
 
     private fun onDragBy(dx: Float, dy: Float) {
@@ -417,16 +400,20 @@ class FloatingWindowService : LifecycleService() {
     }
 
     private fun setMode(mode: FloatMode) {
+        val prev = modeFlow.value
+        if (mode == FloatMode.BALL && prev != FloatMode.BALL) {
+            lastExpandedMode = prev
+        }
         modeFlow.value = mode
-        // TTS 面板与其设置面板（自定义延时输入）需要输入法焦点，其它态保持不可聚焦（不拦截触摸）
-        setWindowFocusable(mode == FloatMode.TTS || mode == FloatMode.TTS_SETTINGS)
-        // 展开后的边界约束由布局监听按实际尺寸执行；收起时还原到球的锚点。
-        if (mode == FloatMode.BALL) restoreAnchor()
+        // TTS 面板与其设置面板（自定义延时输入）需要输入法焦点，其它态保持不可聚焦
+        applyWindowFlags(mode)
+        // 展开态（迷你条/菜单/TTS）确保不超出屏幕右边；收起时还原到球的锚点
+        if (mode != FloatMode.BALL) clampExpandedX() else restoreAnchor()
     }
 
     /**
      * 收起为球态时还原用户拖动过的锚点位置。
-     * 边界兜底由布局监听执行：此刻 view 仍是展开态的宽度，需等重新测量成球的尺寸后再 clamp，
+     * 边界兜底放到 post 里执行：此刻 view 仍是展开态的宽度，需等重新测量成球的尺寸后再 clamp，
      * 否则会用面板宽度去约束球，把靠右的球再次推向左边。
      */
     private fun restoreAnchor() {
@@ -435,84 +422,60 @@ class FloatingWindowService : LifecycleService() {
         lp.x = anchorX
         lp.y = anchorY
         runCatching { windowManager?.updateViewLayout(h.view, lp) }
+        h.view.post { clampToBounds() }
     }
 
     /**
-     * 切换悬浮窗是否可获得焦点。
-     * TTS 输入需要软键盘 → 去掉 FLAG_NOT_FOCUSABLE；其它态恢复不可聚焦，避免拦截系统触摸。
+     * 按模式切换窗口 flags。
+     * - 始终 NOT_TOUCH_MODAL：窗外触摸落到下层 App，展开时也不挡操作
+     * - 展开态加 WATCH_OUTSIDE_TOUCH：收到 ACTION_OUTSIDE 后收起
+     * - TTS / 设置需要软键盘时去掉 NOT_FOCUSABLE
      */
-    private fun setWindowFocusable(focusable: Boolean) {
+    private fun applyWindowFlags(mode: FloatMode) {
         val lp = params ?: return
         val h = host ?: return
-        lp.flags = if (focusable) {
-            // 可聚焦（软键盘）但仍放行窗口外的触摸：FLAG_NOT_FOCUSABLE 会隐式带上
-            // FLAG_NOT_TOUCH_MODAL，去掉它后必须显式补回，否则整屏触摸都会被悬浮窗吞掉
-            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+        lp.flags = if (mode == FloatMode.BALL) {
+            ballWindowFlags()
         } else {
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+            expandedWindowFlags(focusable = mode == FloatMode.TTS || mode == FloatMode.TTS_SETTINGS)
         }
         lp.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
         runCatching { windowManager?.updateViewLayout(h.view, lp) }
     }
 
-    /** 屏幕安全区域，始终预留系统栏、刘海和 8dp 边距。Android 10 使用稳定 Insets。 */
-    @Suppress("DEPRECATION")
-    private fun refreshOverlayBounds(appliedInsets: WindowInsets? = host?.view?.rootWindowInsets) {
-        val wm = windowManager ?: return
-        val bounds: Rect
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            val metrics = wm.currentWindowMetrics
-            bounds = Rect(metrics.bounds)
-            val insets = metrics.windowInsets.getInsetsIgnoringVisibility(
-                WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout()
-            )
-            bounds.inset(insets.left, insets.top, insets.right, insets.bottom)
-        } else {
-            val metrics = DisplayMetrics()
-            wm.defaultDisplay.getRealMetrics(metrics)
-            bounds = Rect(0, 0, metrics.widthPixels, metrics.heightPixels)
-            appliedInsets?.let { insets ->
-                val cutout = insets.displayCutout
-                bounds.inset(
-                    maxOf(insets.stableInsetLeft, cutout?.safeInsetLeft ?: 0),
-                    maxOf(insets.stableInsetTop, cutout?.safeInsetTop ?: 0),
-                    maxOf(insets.stableInsetRight, cutout?.safeInsetRight ?: 0),
-                    maxOf(insets.stableInsetBottom, cutout?.safeInsetBottom ?: 0)
-                )
-            }
-        }
-        val margin = dpToPx(8)
-        if (bounds.width() > margin * 2 && bounds.height() > margin * 2) {
-            bounds.inset(margin, margin)
-        }
-        if (bounds.isEmpty || bounds == overlayBoundsFlow.value) return
-        overlayBoundsFlow.value = bounds
-        scheduleClampToBounds()
+    private fun ballWindowFlags(): Int =
+        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+
+    private fun expandedWindowFlags(focusable: Boolean): Int {
+        var flags = WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+            WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+        if (!focusable) flags = flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+        return flags
     }
 
-    /** 合并同一帧的 Insets / 布局回调，避免对尚未生效的位置重复叠加修正量。 */
-    private fun scheduleClampToBounds() {
-        val view = host?.view ?: return
-        view.removeCallbacks(clampRunnable)
-        view.postOnAnimation(clampRunnable)
-    }
-
-    /** 以实际屏幕坐标约束窗口，避免不同系统的悬浮窗原点/系统栏偏移导致越界。 */
+    /** 边界兜底：把悬浮球约束在屏幕内，但不贴边，保留自由悬停位置。 */
     private fun clampToBounds() {
         val lp = params ?: return
         val h = host ?: return
-        if (!h.view.isAttachedToWindow || h.view.width == 0 || h.view.height == 0) return
-        val bounds = overlayBoundsFlow.value
-        if (bounds.isEmpty) return
-        val location = IntArray(2)
-        h.view.getLocationOnScreen(location)
-        val targetX = location[0].coerceIn(bounds.left, maxOf(bounds.left, bounds.right - h.view.width))
-        val targetY = location[1].coerceIn(bounds.top, maxOf(bounds.top, bounds.bottom - h.view.height))
-        if (targetX == location[0] && targetY == location[1]) return
-        lp.x += targetX - location[0]
-        lp.y += targetY - location[1]
+        val screenW = resources.displayMetrics.widthPixels
+        val screenH = resources.displayMetrics.heightPixels
+        val viewW = h.view.width.takeIf { it > 0 } ?: dpToPx(56)
+        val viewH = h.view.height.takeIf { it > 0 } ?: dpToPx(56)
+        lp.x = lp.x.coerceIn(0, (screenW - viewW).coerceAtLeast(0))
+        lp.y = lp.y.coerceIn(0, (screenH - viewH).coerceAtLeast(0))
+        runCatching { windowManager?.updateViewLayout(h.view, lp) }
+    }
+
+    private fun clampExpandedX() {
+        val lp = params ?: return
+        val h = host ?: return
+        val screenW = resources.displayMetrics.widthPixels
+        val panelW = dpToPx(EXPANDED_PANEL_WIDTH_DP)
+        if (lp.x + panelW > screenW) lp.x = (screenW - panelW).coerceAtLeast(8)
+        if (lp.x < 8) lp.x = 8
         runCatching { windowManager?.updateViewLayout(h.view, lp) }
     }
 
