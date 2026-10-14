@@ -14,6 +14,8 @@ permissions:
 
 jobs:
   sync-release:
+    # 仅上游官方仓库同步 Release；yuhuo 镜像禁用。
+    if: github.repository == 'lm060719/io.mo.glassmic'
     runs-on: ubuntu-latest
     steps:
       - name: Sync release to target repo

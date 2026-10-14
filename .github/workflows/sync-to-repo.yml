@@ -6,6 +6,8 @@ on:
 
 jobs:
   sync:
+    # 仅上游官方仓库同步到 Xposed-Modules-Repo；yuhuo 镜像禁用。
+    if: github.repository == 'lm060719/io.mo.glassmic'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout source

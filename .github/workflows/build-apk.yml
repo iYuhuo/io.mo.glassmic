@@ -1,4 +1,4 @@
-name: 构建正式签名 APK
+name: 构建 APK
 
 on:
   push:
@@ -14,8 +14,7 @@ concurrency:
 
 jobs:
   build:
-    # 同步到模块仓库后不重复构建，也不向镜像仓库提供签名材料。
-    if: github.repository == 'lm060719/io.mo.glassmic'
+    if: github.repository == 'iYuhuo/io.mo.glassmic'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
@@ -42,8 +41,8 @@ jobs:
       - name: 安装项目要求的 SDK 和原生工具链
         run: sdkmanager "platforms;android-35" "platforms;android-36" "build-tools;36.0.0" "cmake;3.22.1" "ndk;26.1.10909125"
 
-      - name: 编译诊断检查类及 Release 安装包
-        run: bash ./gradlew :app:compileDebugKotlin :xposed:compileDebugKotlin :app:assembleRelease --no-daemon --console=plain
+      - name: 编译 Kotlin 并打包 Debug / Release
+        run: bash ./gradlew :app:compileDebugKotlin :xposed:compileDebugKotlin :app:assembleDebug :app:assembleRelease --no-daemon --console=plain
 
       - name: 执行音频与回调时序回归检查
         run: |
@@ -56,7 +55,7 @@ jobs:
           java -cp "$classpath" AudioRegression
           java -cp "$classpath" TapTimingRegression
 
-      - name: 使用正式密钥签名并验证安装包
+      - name: 整理产物（可选正式签名）
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -64,31 +63,46 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          test -n "$ANDROID_KEYSTORE_BASE64"
-          test -n "$ANDROID_KEYSTORE_PASSWORD"
-          test -n "$ANDROID_KEY_ALIAS"
-          test -n "$ANDROID_KEY_PASSWORD"
-          umask 077
-          keystore=$(mktemp "$RUNNER_TEMP/glassmic-signing-XXXXXX")
-          trap 'rm -f "$keystore"' EXIT
-          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore"
           version=$(python3 -c 'import json; print(json.load(open("app/build/outputs/apk/release/output-metadata.json"))["elements"][0]["versionName"])')
           version_code=$(python3 -c 'import json; print(json.load(open("app/build/outputs/apk/release/output-metadata.json"))["elements"][0]["versionCode"])')
           tools="$ANDROID_HOME/build-tools/36.0.0"
           mkdir -p dist
-          apk="dist/GlassMic-$version-release.apk"
-          "$tools/zipalign" -P 16 -f 4 app/build/outputs/apk/release/app-release-unsigned.apk "$RUNNER_TEMP/glassmic-aligned.apk"
-          "$tools/apksigner" sign --ks "$keystore" --ks-key-alias "$ANDROID_KEY_ALIAS" --ks-pass env:ANDROID_KEYSTORE_PASSWORD --key-pass env:ANDROID_KEY_PASSWORD --v4-signing-enabled false --out "$apk" "$RUNNER_TEMP/glassmic-aligned.apk"
-          "$tools/apksigner" verify --verbose --print-certs "$apk" > dist/signature.txt
-          grep -F 'Signer #1 certificate SHA-256 digest: 20e354f32bda7574dcc747150e4f5a267a2d3bca50eb4656a3be7380cd4f96bc' dist/signature.txt
-          "$tools/zipalign" -c -P 16 4 "$apk"
-          (cd dist && sha256sum "GlassMic-$version-release.apk" > SHA256SUMS.txt)
-          printf 'versionName=%s\nversionCode=%s\ncommit=%s\nworkflow=%s/%s/actions/runs/%s\n' "$version" "$version_code" "$GITHUB_SHA" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" > dist/build-info.txt
+          cp app/build/outputs/apk/debug/app-debug.apk "dist/yuhuo-$version-debug.apk"
 
-      - name: 上传正式安装包、签名信息与校验值
+          if [ -n "${ANDROID_KEYSTORE_BASE64:-}" ] && [ -n "${ANDROID_KEYSTORE_PASSWORD:-}" ] \
+            && [ -n "${ANDROID_KEY_ALIAS:-}" ] && [ -n "${ANDROID_KEY_PASSWORD:-}" ]; then
+            umask 077
+            keystore=$(mktemp "$RUNNER_TEMP/yuhuo-signing-XXXXXX")
+            trap 'rm -f "$keystore"' EXIT
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+            apk="dist/yuhuo-$version-release.apk"
+            "$tools/zipalign" -P 16 -f 4 app/build/outputs/apk/release/app-release-unsigned.apk "$RUNNER_TEMP/yuhuo-aligned.apk"
+            "$tools/apksigner" sign \
+              --ks "$keystore" \
+              --ks-key-alias "$ANDROID_KEY_ALIAS" \
+              --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
+              --key-pass env:ANDROID_KEY_PASSWORD \
+              --v4-signing-enabled false \
+              --out "$apk" \
+              "$RUNNER_TEMP/yuhuo-aligned.apk"
+            "$tools/apksigner" verify --verbose --print-certs "$apk" > dist/signature.txt
+            "$tools/zipalign" -c -P 16 4 "$apk"
+            (cd dist && sha256sum "yuhuo-$version-release.apk" "yuhuo-$version-debug.apk" > SHA256SUMS.txt)
+            echo "signed=true" >> "$GITHUB_STEP_SUMMARY"
+          else
+            cp app/build/outputs/apk/release/app-release-unsigned.apk "dist/yuhuo-$version-release-unsigned.apk"
+            (cd dist && sha256sum "yuhuo-$version-debug.apk" "yuhuo-$version-release-unsigned.apk" > SHA256SUMS.txt)
+            echo "signed=false (missing ANDROID_KEYSTORE_* secrets; uploaded debug + unsigned release)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          printf 'versionName=%s\nversionCode=%s\ncommit=%s\nworkflow=%s/%s/actions/runs/%s\n' \
+            "$version" "$version_code" "$GITHUB_SHA" \
+            "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" > dist/build-info.txt
+
+      - name: 上传安装包与校验值
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: GlassMic-signed-release-${{ github.sha }}
+          name: yuhuo-apk-${{ github.sha }}
           path: dist/
           if-no-files-found: error
           retention-days: 30
