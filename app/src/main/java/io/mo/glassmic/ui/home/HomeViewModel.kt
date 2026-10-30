@@ -25,6 +25,8 @@ import io.mo.glassmic.service.GlassForegroundService
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -39,9 +41,6 @@ data class HomeUiState(
     val scopeLabel: String = "全局",
     val floatingWindowVisible: Boolean = false,
     val isStreaming: Boolean = false,
-    val positionMs: Long = 0L,
-    val durationMs: Long = 0L,
-    val progress: Float = 0f,
     val hookActivity: HookActivity = HookActivity.NEVER_PINGED,
     val hookLastPkg: String? = null,
     val hookLastPingMs: Long = 0L,
@@ -57,6 +56,13 @@ data class HomeUiState(
     /** 生效范围卡片上展示的前几个应用包名。 */
     val scopePackages: List<String> = emptyList(),
     val scopeAllApps: Boolean = false
+)
+
+/** 高频播放进度，独立于大 state，避免播放时整页重组。 */
+data class ProgressUiState(
+    val positionMs: Long = 0L,
+    val durationMs: Long = 0L,
+    val progress: Float = 0f
 )
 
 @HiltViewModel
@@ -79,8 +85,24 @@ class HomeViewModel @Inject constructor(
     private val hookFlow = hookStatusRepo.flow
     private val statsFlow = audioStatsRepo.flow
 
+    // 屏蔽高频 positionMs：只有真正的元数据变化才触发大 state，播放进度不再让整页重组。
+    private val runtimeMetaFlow = runtime.flow
+        .map { it.copy(positionMs = 0L) }
+        .distinctUntilChanged()
+
+    // 高频进度独立 flow，仅进度条局部收集。
+    val progressState: StateFlow<ProgressUiState> = runtime.flow
+        .map {
+            ProgressUiState(
+                positionMs = it.positionMs,
+                durationMs = it.durationMs,
+                progress = if (it.durationMs > 0) it.positionMs.toFloat() / it.durationMs else 0f
+            )
+        }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, ProgressUiState())
+
     val state: StateFlow<HomeUiState> = combine(
-        combine(runtime.flow, configStore.flow) { rt, cfg -> rt to cfg },
+        combine(runtimeMetaFlow, configStore.flow) { rt, cfg -> rt to cfg },
         combine(groupsFlow, clipsFlow) { g, c -> g to c },
         combine(hookFlow, statsFlow) { h, s -> h to s }
     ) { rtCfg, groupsClips, hookStats ->
@@ -136,9 +158,6 @@ class HomeViewModel @Inject constructor(
             },
             floatingWindowVisible = rt.floatingWindowVisible,
             isStreaming = rt.isStreaming,
-            positionMs = rt.positionMs,
-            durationMs = rt.durationMs,
-            progress = if (rt.durationMs > 0) rt.positionMs.toFloat() / rt.durationMs else 0f,
             hookActivity = hook.activity,
             hookLastPkg = hook.lastPackage,
             hookLastPingMs = hook.lastPingMs,

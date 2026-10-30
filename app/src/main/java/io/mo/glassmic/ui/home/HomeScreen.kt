@@ -149,6 +149,7 @@ fun HomeScreen(
             if (state.running) {
                 NowPlayingCard(
                     state = state,
+                    progressState = vm.progressState,
                     onChangeSource = onOpenLibrary,
                     onTogglePause = vm::togglePause,
                     onSeek = vm::seekTo,
@@ -311,6 +312,7 @@ private fun MicHero(state: HomeUiState, onToggle: () -> Unit) {
 @Composable
 private fun NowPlayingCard(
     state: HomeUiState,
+    progressState: kotlinx.coroutines.flow.StateFlow<ProgressUiState>,
     onChangeSource: () -> Unit,
     onTogglePause: () -> Unit,
     onSeek: (Long) -> Unit,
@@ -344,16 +346,7 @@ private fun NowPlayingCard(
             }
 
             if (state.hasFileSource) {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    SeekBar(
-                        progress = state.progress.coerceIn(0f, 1f),
-                        onSeek = { f -> if (state.durationMs > 0) onSeek((f * state.durationMs).toLong()) }
-                    )
-                    Row(Modifier.fillMaxWidth()) {
-                        Text(formatMs(state.positionMs), fontSize = 12.sp, color = t.ink3, fontFamily = MonoFamily, modifier = Modifier.weight(1f))
-                        Text(formatMs(state.durationMs), fontSize = 12.sp, color = t.ink3, fontFamily = MonoFamily)
-                    }
-                }
+                ProgressSection(progressState = progressState, onSeek = onSeek)
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -386,6 +379,26 @@ private fun NowPlayingCard(
                     modifier = Modifier.weight(1f)
                 )
             }
+        }
+    }
+}
+
+/** 播放进度独立组件：仅这里随高频进度重组，不影响卡片其余部分和整页。 */
+@Composable
+private fun ProgressSection(
+    progressState: kotlinx.coroutines.flow.StateFlow<ProgressUiState>,
+    onSeek: (Long) -> Unit
+) {
+    val t = glass
+    val p by progressState.collectAsState()
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        SeekBar(
+            progress = p.progress.coerceIn(0f, 1f),
+            onSeek = { f -> if (p.durationMs > 0) onSeek((f * p.durationMs).toLong()) }
+        )
+        Row(Modifier.fillMaxWidth()) {
+            Text(formatMs(p.positionMs), fontSize = 12.sp, color = t.ink3, fontFamily = MonoFamily, modifier = Modifier.weight(1f))
+            Text(formatMs(p.durationMs), fontSize = 12.sp, color = t.ink3, fontFamily = MonoFamily)
         }
     }
 }

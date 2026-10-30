@@ -156,6 +156,43 @@ fun AiTtsSettingsScreen(
                 }
             }
 
+            if (ai.provider == TtsProvider.FISH) {
+                item {
+                    Section(stringResource(R.string.ai_tts_section_fish)) {
+                        Text(
+                            stringResource(R.string.ai_tts_fish_hint),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                        )
+                        ConfigTextField(stringResource(R.string.ai_tts_fish_voices), ai.fishVoices, vm::setFishVoices)
+                        FishVoicePickerRow(
+                            state = vm.fishVoiceResults.collectAsState().value,
+                            onFetch = vm::fetchFishVoices,
+                            onPick = vm::pickFishVoice,
+                            onDismiss = vm::dismissFishVoices
+                        )
+                        SwitchRow(
+                            label = stringResource(R.string.ai_tts_fish_auto_tag),
+                            hint = stringResource(R.string.ai_tts_fish_auto_tag_hint),
+                            checked = ai.fishAutoTag,
+                            onChange = vm::setFishAutoTag
+                        )
+                        if (ai.fishAutoTag) {
+                            SwitchRow(
+                                label = stringResource(R.string.ai_tts_fish_humanize),
+                                hint = stringResource(R.string.ai_tts_fish_humanize_hint),
+                                checked = ai.fishHumanize,
+                                onChange = vm::setFishHumanize
+                            )
+                            ConfigTextField(stringResource(R.string.ai_tts_llm_endpoint), ai.llmEndpoint, vm::setLlmEndpoint)
+                            ConfigTextField(stringResource(R.string.ai_tts_llm_api_key), ai.llmApiKey, vm::setLlmApiKey)
+                            ConfigTextField(stringResource(R.string.ai_tts_llm_model), ai.llmModel, vm::setLlmModel)
+                        }
+                    }
+                }
+            }
+
             item {
                 Section(stringResource(R.string.ai_tts_section_test)) {
                     TestRow(vm.test.collectAsState().value, onTest = vm::testConnection)
@@ -195,6 +232,7 @@ private fun ProviderPicker(current: TtsProvider, onSelect: (TtsProvider) -> Unit
         PolicyOption(stringResource(R.string.ai_tts_provider_openai), effective == TtsProvider.OPENAI) { onSelect(TtsProvider.OPENAI) }
         PolicyOption(stringResource(R.string.ai_tts_provider_gemini), effective == TtsProvider.GEMINI) { onSelect(TtsProvider.GEMINI) }
         PolicyOption(stringResource(R.string.ai_tts_provider_mimo), effective == TtsProvider.MIMO) { onSelect(TtsProvider.MIMO) }
+        PolicyOption(stringResource(R.string.ai_tts_section_fish), effective == TtsProvider.FISH) { onSelect(TtsProvider.FISH) }
     }
 }
 
@@ -233,6 +271,59 @@ private fun ModelPickerRow(state: TtsModelsState, onFetch: () -> Unit, onPick: (
             )
             else -> {}
         }
+    }
+}
+
+@Composable
+private fun FishVoicePickerRow(
+    state: FishVoicesState,
+    onFetch: (String) -> Unit,
+    onPick: (String, String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var query by remember { mutableStateOf("") }
+    var open by remember { mutableStateOf(false) }
+    val loading = state is FishVoicesState.Loading
+    LaunchedEffect(state) { if (state is FishVoicesState.Loaded) open = true }
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        OutlinedTextField(
+            value = query,
+            onValueChange = { query = it },
+            label = { Text(stringResource(R.string.ai_tts_fish_voice_search_hint)) },
+            singleLine = true,
+            modifier = Modifier.weight(1f)
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Box {
+            TextButton(onClick = { onFetch(query) }, enabled = !loading) {
+                Text(
+                    when {
+                        loading -> stringResource(R.string.ai_tts_fish_fetching)
+                        query.isBlank() -> stringResource(R.string.ai_tts_fish_my_voices)
+                        else -> stringResource(R.string.ai_tts_fish_search)
+                    }
+                )
+            }
+            DropdownMenu(expanded = open, onDismissRequest = { open = false; onDismiss() }) {
+                (state as? FishVoicesState.Loaded)?.voices?.forEach { (name, id) ->
+                    DropdownMenuItem(
+                        text = { Text(name) },
+                        onClick = { onPick(name, id); open = false }
+                    )
+                }
+            }
+        }
+    }
+    if (state is FishVoicesState.Error) {
+        Text(
+            state.message,
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFFE5484D),
+            modifier = Modifier.padding(horizontal = 16.dp)
+        )
     }
 }
 

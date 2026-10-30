@@ -101,6 +101,8 @@ class SharedPcmPublisher @Inject constructor(
         const val WAVEFORM_POINTS_PER_FRAME = 24 // 每帧下采样出的波形振幅点数
         /** 播完切真麦前：最多等队列排空这么久，避免掐掉结尾 */
         const val EOF_DRAIN_TIMEOUT_MS = 1_500L
+        /** 耳返监听音量的保守默认值，防止满幅输出声音过大 */
+        const val MONITOR_VOLUME_DEFAULT = 0.7f
     }
 
     // 实时波形振幅点（0..1）。仅在有订阅者（波形悬浮窗打开）时计算并发送。
@@ -116,6 +118,7 @@ class SharedPcmPublisher @Inject constructor(
     @Volatile private var paused: Boolean = false
     @Volatile private var monitorEnabled = false
     @Volatile private var outputVolumeRuntime = Float.NaN
+    @Volatile private var monitorVolumeRuntime = Float.NaN
     @Volatile private var effects = AudioEffects()
     // 仅在广播协程单线程访问，无需同步
     private val reverbLine = ReverbLine(REVERB_DELAY_SAMPLES)
@@ -603,9 +606,9 @@ class SharedPcmPublisher @Inject constructor(
                 val track = AudioTrack.Builder()
                     .setAudioAttributes(
                         AudioAttributes.Builder()
-                            // 用 SONIFICATION，避免 USAGE_MEDIA 抢焦点/改路由导致录音 App ERROR
-                            .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                            // 走媒体流：系统媒体音量键才能控制耳返；不请求音频焦点，避免影响录音 App
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
                             .build()
                     )
                     .setAudioFormat(
@@ -689,7 +692,21 @@ class SharedPcmPublisher @Inject constructor(
         outputVolumeRuntime = volume.coerceIn(0f, 2f)
     }
 
+    /** 耳返监听音量拖动时立即生效，独立于注入音量。 */
+    fun setMonitorVolumeRuntime(volume: Float) {
+        monitorVolumeRuntime = volume.coerceIn(0f, 1f)
+    }
+
     fun outputVolumeBlocking(): Float = outputVolume()
+
+    fun monitorVolumeBlocking(): Float = monitorVolume()
+
+    /** 耳返独立监听音量：runtime 优先；未配置（0）按保守默认 0.7，避免满幅炸耳。 */
+    private fun monitorVolume(): Float {
+        if (!monitorVolumeRuntime.isNaN()) return monitorVolumeRuntime.coerceIn(0f, 1f)
+        val v = configStore.currentBlocking().floatingWindow.monitorVolume
+        return if (v <= 0f) MONITOR_VOLUME_DEFAULT else v.coerceIn(0f, 1f)
+    }
 
     private fun outputVolume(): Float {
         if (!outputVolumeRuntime.isNaN()) {
@@ -710,9 +727,9 @@ class SharedPcmPublisher @Inject constructor(
         return buf
     }
 
-    /** 本地监听专用：只做音量，不碰注入侧混响延迟线。 */
+    /** 本地监听专用：只用独立监听音量，不碰注入侧混响延迟线。 */
     private fun processMonitorOutput(data: ByteArray): ByteArray {
-        val vol = outputVolume()
+        val vol = monitorVolume()
         if (vol >= 0.999f && vol <= 1.001f) return data
         val buf = data.copyOf()
         applyVolumeInPlace(buf, vol)

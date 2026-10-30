@@ -147,9 +147,12 @@ fun FloatingBubbleRoot(
     onCloseTtsSettings: () -> Unit,
     localMonitor: Boolean,
     outputVolume: Float,
+    monitorVolume: Float,
     onToggleLocalMonitor: (Boolean) -> Unit,
     onOutputVolumeChange: (Float) -> Unit,
     onOutputVolumeChangeFinished: (Float) -> Unit,
+    onMonitorVolumeChange: (Float) -> Unit,
+    onMonitorVolumeChangeFinished: (Float) -> Unit,
     /** 作用域内是否正处于持续禁录。 */
     recordingBlocked: Boolean,
     onReleaseMicOccupation: () -> Unit,
@@ -182,6 +185,7 @@ fun FloatingBubbleRoot(
             currentName = currentName,
             localMonitor = localMonitor,
             outputVolume = outputVolume,
+            monitorVolume = monitorVolume,
             onTogglePause = onTogglePause,
             onSeek = onSeek,
             onOpenMenu = onOpenMenu,
@@ -190,6 +194,8 @@ fun FloatingBubbleRoot(
             onToggleLocalMonitor = onToggleLocalMonitor,
             onOutputVolumeChange = onOutputVolumeChange,
             onOutputVolumeChangeFinished = onOutputVolumeChangeFinished,
+            onMonitorVolumeChange = onMonitorVolumeChange,
+            onMonitorVolumeChangeFinished = onMonitorVolumeChangeFinished,
             onDragBy = onDragBy,
             onDragEnd = onDragEnd
         )
@@ -269,9 +275,12 @@ fun FloatingBubbleRoot(
                         onCancelDelayed = onCancelDelayedTts,
                         localMonitor = localMonitor,
                         outputVolume = outputVolume,
+                        monitorVolume = monitorVolume,
                         onToggleLocalMonitor = onToggleLocalMonitor,
                         onOutputVolumeChange = onOutputVolumeChange,
                         onOutputVolumeChangeFinished = onOutputVolumeChangeFinished,
+                        onMonitorVolumeChange = onMonitorVolumeChange,
+                        onMonitorVolumeChangeFinished = onMonitorVolumeChangeFinished,
                     )
                 } else {
                     LibraryTab(
@@ -294,9 +303,12 @@ fun FloatingBubbleRoot(
             onSetDelay = onSetTtsDelay,
             localMonitor = localMonitor,
             outputVolume = outputVolume,
+            monitorVolume = monitorVolume,
             onToggleLocalMonitor = onToggleLocalMonitor,
             onOutputVolumeChange = onOutputVolumeChange,
             onOutputVolumeChangeFinished = onOutputVolumeChangeFinished,
+            onMonitorVolumeChange = onMonitorVolumeChange,
+            onMonitorVolumeChangeFinished = onMonitorVolumeChangeFinished,
             recordingBlocked = recordingBlocked,
             onReleaseMicOccupation = onReleaseMicOccupation,
             onBack = onCloseTtsSettings,
@@ -589,6 +601,7 @@ private fun MiniBar(
     currentName: String?,
     localMonitor: Boolean,
     outputVolume: Float,
+    monitorVolume: Float,
     onTogglePause: () -> Unit,
     onSeek: (Float) -> Unit,
     onOpenMenu: () -> Unit,
@@ -597,6 +610,8 @@ private fun MiniBar(
     onToggleLocalMonitor: (Boolean) -> Unit,
     onOutputVolumeChange: (Float) -> Unit,
     onOutputVolumeChangeFinished: (Float) -> Unit,
+    onMonitorVolumeChange: (Float) -> Unit,
+    onMonitorVolumeChangeFinished: (Float) -> Unit,
     onDragBy: (Float, Float) -> Unit,
     onDragEnd: () -> Unit,
 ) {
@@ -666,9 +681,12 @@ private fun MiniBar(
             AudioRouteControls(
                 localMonitor = localMonitor,
                 outputVolume = outputVolume,
+                monitorVolume = monitorVolume,
                 onToggleLocalMonitor = onToggleLocalMonitor,
                 onOutputVolumeChange = onOutputVolumeChange,
                 onOutputVolumeChangeFinished = onOutputVolumeChangeFinished,
+                onMonitorVolumeChange = onMonitorVolumeChange,
+                onMonitorVolumeChangeFinished = onMonitorVolumeChangeFinished,
             )
         }
     }
@@ -840,9 +858,12 @@ private fun TtsTab(
     onCancelDelayed: () -> Unit,
     localMonitor: Boolean,
     outputVolume: Float,
+    monitorVolume: Float,
     onToggleLocalMonitor: (Boolean) -> Unit,
     onOutputVolumeChange: (Float) -> Unit,
     onOutputVolumeChangeFinished: (Float) -> Unit,
+    onMonitorVolumeChange: (Float) -> Unit,
+    onMonitorVolumeChangeFinished: (Float) -> Unit,
 ) {
     var focused by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(OverlayShapes.Card)
@@ -942,9 +963,12 @@ private fun TtsTab(
     AudioRouteControls(
         localMonitor = localMonitor,
         outputVolume = outputVolume,
+        monitorVolume = monitorVolume,
         onToggleLocalMonitor = onToggleLocalMonitor,
         onOutputVolumeChange = onOutputVolumeChange,
         onOutputVolumeChangeFinished = onOutputVolumeChangeFinished,
+        onMonitorVolumeChange = onMonitorVolumeChange,
+        onMonitorVolumeChangeFinished = onMonitorVolumeChangeFinished,
     )
 
     // 进度条：设置里开启后，生成/播放后可拖动控制播放进度
@@ -1010,9 +1034,12 @@ private fun TtsSettingsPanel(
     onSetDelay: (Int) -> Unit,
     localMonitor: Boolean,
     outputVolume: Float,
+    monitorVolume: Float,
     onToggleLocalMonitor: (Boolean) -> Unit,
     onOutputVolumeChange: (Float) -> Unit,
     onOutputVolumeChangeFinished: (Float) -> Unit,
+    onMonitorVolumeChange: (Float) -> Unit,
+    onMonitorVolumeChangeFinished: (Float) -> Unit,
     recordingBlocked: Boolean,
     onReleaseMicOccupation: () -> Unit,
     onBack: () -> Unit,
@@ -1090,9 +1117,12 @@ private fun TtsSettingsPanel(
             AudioRouteControls(
                 localMonitor = localMonitor,
                 outputVolume = outputVolume,
+                monitorVolume = monitorVolume,
                 onToggleLocalMonitor = onToggleLocalMonitor,
                 onOutputVolumeChange = onOutputVolumeChange,
                 onOutputVolumeChangeFinished = onOutputVolumeChangeFinished,
+                onMonitorVolumeChange = onMonitorVolumeChange,
+                onMonitorVolumeChangeFinished = onMonitorVolumeChangeFinished,
             )
         }
     }
@@ -1102,11 +1132,15 @@ private fun TtsSettingsPanel(
 private fun AudioRouteControls(
     localMonitor: Boolean,
     outputVolume: Float,
+    monitorVolume: Float,
     onToggleLocalMonitor: (Boolean) -> Unit,
     onOutputVolumeChange: (Float) -> Unit,
     onOutputVolumeChangeFinished: (Float) -> Unit,
+    onMonitorVolumeChange: (Float) -> Unit,
+    onMonitorVolumeChangeFinished: (Float) -> Unit,
 ) {
     var volumeDraft by remember(outputVolume) { mutableFloatStateOf(outputVolume.coerceIn(0f, 2f)) }
+    var monitorDraft by remember(monitorVolume) { mutableFloatStateOf(monitorVolume.coerceIn(0f, 1f)) }
     Column(modifier = Modifier.fillMaxWidth().padding(top = 6.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -1136,6 +1170,25 @@ private fun AudioRouteControls(
             valueRange = 0f..2f,
             modifier = Modifier.padding(top = 0.dp)
         )
+        // 耳返监听音量独立控制，仅在本地监听开启时显示
+        if (localMonitor) {
+            Text(
+                stringResource(R.string.float_monitor_volume),
+                color = OverlayColors.OnDark,
+                fontSize = 12.sp,
+                modifier = Modifier.padding(top = 2.dp)
+            )
+            Slider(
+                value = monitorDraft,
+                onValueChange = {
+                    monitorDraft = it
+                    onMonitorVolumeChange(it)
+                },
+                onValueChangeFinished = { onMonitorVolumeChangeFinished(monitorDraft) },
+                valueRange = 0f..1f,
+                modifier = Modifier.padding(top = 0.dp)
+            )
+        }
     }
 }
 

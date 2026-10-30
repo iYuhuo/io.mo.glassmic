@@ -319,6 +319,30 @@ class PlaybackController @Inject constructor(
 
     fun outputVolumeBlocking(): Float = publisher.outputVolumeBlocking()
 
+    /** 持久化耳返监听音量（独立于注入音量）。 */
+    suspend fun setMonitorVolume(volume: Float) = withContext(Dispatchers.IO) {
+        val clamped = volume.coerceIn(
+            FloatingWindowConstants.MONITOR_VOLUME_MIN,
+            FloatingWindowConstants.MONITOR_VOLUME_MAX
+        )
+        publisher.setMonitorVolumeRuntime(clamped)
+        configStore.update {
+            it.setFloatingWindow(it.floatingWindow.toBuilder().setMonitorVolume(clamped))
+        }
+    }
+
+    /** 拖动耳返音量条时立即生效（不写盘）。 */
+    fun setMonitorVolumeRuntime(volume: Float) {
+        publisher.setMonitorVolumeRuntime(
+            volume.coerceIn(
+                FloatingWindowConstants.MONITOR_VOLUME_MIN,
+                FloatingWindowConstants.MONITOR_VOLUME_MAX
+            )
+        )
+    }
+
+    fun monitorVolumeBlocking(): Float = publisher.monitorVolumeBlocking()
+
     val isLocalMonitorEnabled: Boolean get() = publisher.isLocalMonitorEnabled
 
     /** 运行时是否正在本地监听（供 UI，勿用偏好配置冒充）。 */

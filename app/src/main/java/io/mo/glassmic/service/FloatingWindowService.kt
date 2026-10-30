@@ -239,6 +239,11 @@ class FloatingWindowService : LifecycleService() {
                     onOutputVolumeChangeFinished = { vol ->
                         lifecycleScope.launch { playback.setOutputVolume(vol) }
                     },
+                    monitorVolume = playback.monitorVolumeBlocking(),
+                    onMonitorVolumeChange = { vol -> playback.setMonitorVolumeRuntime(vol) },
+                    onMonitorVolumeChangeFinished = { vol ->
+                        lifecycleScope.launch { playback.setMonitorVolume(vol) }
+                    },
                     recordingBlocked = rt.recordingBlockUntilMs > 0L &&
                         System.currentTimeMillis() < rt.recordingBlockUntilMs,
                     onReleaseMicOccupation = releaseMic@{

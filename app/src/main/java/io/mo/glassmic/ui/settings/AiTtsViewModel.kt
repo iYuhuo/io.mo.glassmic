@@ -12,6 +12,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.mo.glassmic.R
 import io.mo.glassmic.audio.tts.AiTtsSynthesizer
+import io.mo.glassmic.audio.tts.FishVoices
 import io.mo.glassmic.audio.tts.PcmSink
 import io.mo.glassmic.audio.tts.TtsRequest
 import io.mo.glassmic.data.audio.SampleImport
@@ -54,6 +55,14 @@ sealed interface TtsModelsState {
     data class Error(val message: String) : TtsModelsState
 }
 
+/** Fish「获取声音」状态：(名称, 声音ID) 列表。 */
+sealed interface FishVoicesState {
+    data object Idle : FishVoicesState
+    data object Loading : FishVoicesState
+    data class Loaded(val voices: List<Pair<String, String>>) : FishVoicesState
+    data class Error(val message: String) : FishVoicesState
+}
+
 /** AI TTS「效果试听」状态（先生成后播放，可重复播放）。 */
 sealed interface TtsPreviewState {
     data object Idle : TtsPreviewState
@@ -90,6 +99,43 @@ class AiTtsViewModel @Inject constructor(
     fun setFormat(v: String) = updateAi { it.format = v }
     fun setStylePrompt(v: String) = updateAi { it.stylePrompt = v }
     fun setMimoOptimizeTextPreview(v: Boolean) = updateAi { it.mimoOptimizeTextPreview = v }
+    fun setFishAutoTag(v: Boolean) = updateAi { it.fishAutoTag = v }
+    fun setFishHumanize(v: Boolean) = updateAi { it.fishHumanize = v }
+    fun setLlmEndpoint(v: String) = updateAi { it.llmEndpoint = v }
+    fun setLlmApiKey(v: String) = updateAi { it.llmApiKey = v }
+    fun setLlmModel(v: String) = updateAi { it.llmModel = v }
+    fun setFishVoices(v: String) = updateAi { it.fishVoices = v }
+
+    // ---- Fish 声音列表 ----
+    private val _fishVoiceResults = MutableStateFlow<FishVoicesState>(FishVoicesState.Idle)
+    val fishVoiceResults: StateFlow<FishVoicesState> = _fishVoiceResults.asStateFlow()
+
+    /** [query] 为空：我的声音；否则按名称搜索公开声音。 */
+    fun fetchFishVoices(query: String) = viewModelScope.launch {
+        if (_fishVoiceResults.value is FishVoicesState.Loading) return@launch
+        _fishVoiceResults.value = FishVoicesState.Loading
+        _fishVoiceResults.value = runCatching { aiTts.fetchFishVoices(query) }.fold(
+            onSuccess = {
+                if (it.isEmpty()) FishVoicesState.Error(AppLocale.string(context, R.string.ai_tts_fish_no_voices))
+                else FishVoicesState.Loaded(it)
+            },
+            onFailure = { FishVoicesState.Error(it.message ?: AppLocale.string(context, R.string.ai_tts_fish_no_voices)) }
+        )
+    }
+
+    fun dismissFishVoices() { _fishVoiceResults.value = FishVoicesState.Idle }
+
+    /** 选中一个声音：设为当前音色，并加入音色预设（悬浮窗可快速切换）。 */
+    fun pickFishVoice(name: String, id: String) {
+        dismissFishVoices()
+        updateAi { b ->
+            val presets = FishVoices.parse(b.fishVoices)
+            if (presets.none { it.second == id }) {
+                b.fishVoices = (presets + (name to id)).joinToString(", ") { "${it.first}:${it.second}" }
+            }
+            b.voice = id
+        }
+    }
 
     // ---- 参考音频（voiceclone）----
     private val _sampleError = MutableStateFlow<String?>(null)

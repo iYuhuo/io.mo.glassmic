@@ -114,12 +114,21 @@ message TtsAiConfig {
   string style_prompt = 9;       // user 消息内容：preset 的风格指令 / voicedesign 的音色描述
   string clone_sample_path = 10; // voiceclone 参考音频样本（filesDir 下相对路径）
   optional bool mimo_optimize_text_preview = 11; // voicedesign 模式下是否优化文本预预览 (默认 true)
+
+  // Fish Audio 专用：合成前用 LLM（OpenAI 兼容 /chat/completions）自动插入 Fish 情绪/音效标签
+  bool fish_auto_tag = 12;        // 是否开启自动标签
+  string llm_endpoint = 13;       // LLM 接口地址（留空默认 DeepSeek https://api.deepseek.com/v1）
+  string llm_api_key = 14;        // LLM 鉴权 key
+  string llm_model = 15;          // LLM 模型名（留空默认 deepseek-chat）
+  bool fish_humanize = 16;        // 自动标签时是否同时把措辞改写得更口语化（关闭则一字不改）
+  string fish_voices = 17;        // 音色预设：逗号分隔的「名称:声音ID」，供悬浮窗快速切换（默认空）
 }
 
 enum TtsProvider {
   OPENAI = 0;      // OpenAI /audio/speech 协议（及兼容网关）
   GEMINI = 2;      // Google Gemini generateContent（AUDIO 模态）
   MIMO = 3;        // 小米 MiMo：/chat/completions + audio 参数，音频在 message 里 base64
+  FISH = 4;        // Fish Audio：POST /v1/tts（model 头选模型，reference_id 选音色）
   reserved 1;      // 曾用于 ANTHROPIC——官方无 TTS 接口，已移除
   reserved "ANTHROPIC";
 }
@@ -153,6 +162,8 @@ message FloatingWindow {
   bool real_mic_mix = 11;
   // 虚拟音源注入音量倍率，1.0 = 100%，范围建议 0.0~2.0
   float output_volume = 12;
+  // 耳返/本地监听独立音量 0.0~1.0；0 视为保守默认 0.7，与注入音量分开控制
+  float monitor_volume = 13;
 }
 
 enum FloatingMode {

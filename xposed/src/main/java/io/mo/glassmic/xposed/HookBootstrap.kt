@@ -60,7 +60,7 @@ object HookBootstrap {
             } else {
                 LegacyAudioRecordHook.install(appCtx, pkg)
             }
-            runCatching { MediaRecorderHook.install(api, pkg) }
+            runCatching { MediaRecorderHook.install(api, appCtx, pkg) }
                 .onFailure { Log.w(TAG, "MediaRecorderHook failed: ${it.message}") }
             val nativeOk = NativeAAudioHook.install(appCtx, pkg)
             MicForceRelease.startWatching(appCtx, pkg)

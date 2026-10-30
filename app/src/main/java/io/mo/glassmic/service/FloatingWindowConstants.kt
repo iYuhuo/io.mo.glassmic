@@ -4,4 +4,7 @@ object FloatingWindowConstants {
     const val OUTPUT_VOLUME_MIN = 0f
     const val OUTPUT_VOLUME_MAX = 2f
     const val OUTPUT_VOLUME_DEFAULT = 1f
+    const val MONITOR_VOLUME_MIN = 0f
+    const val MONITOR_VOLUME_MAX = 1f
+    const val MONITOR_VOLUME_DEFAULT = 0.7f
 }
